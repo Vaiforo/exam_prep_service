@@ -195,8 +195,10 @@ def generate_questions(
     mode: str = "exam",
     count: int = 20,
     topic_id: int | None = None,
+    topic_ids: list[int] | None = None,
     readiness_level: int | None = None,
     difficulty: str | None = None,
+    difficulties: list[str] | None = None,
 ) -> list[Question]:
     count = max(1, min(int(count), 1500))
     stats = answer_stats(db, user.id)
@@ -207,6 +209,17 @@ def generate_questions(
 
     if mode == "official":
         candidates = query.filter(Question.source == "official").all()
+        return weighted_pick(candidates, min(count, len(candidates)), stats)
+
+    if mode == "custom":
+        custom_query = query
+        clean_topic_ids = [int(x) for x in (topic_ids or []) if x is not None]
+        clean_difficulties = [x for x in (difficulties or []) if x in DIFFICULTY_ORDER]
+        if clean_topic_ids:
+            custom_query = custom_query.filter(Question.topic_id.in_(clean_topic_ids))
+        if clean_difficulties:
+            custom_query = custom_query.filter(Question.difficulty.in_(clean_difficulties))
+        candidates = custom_query.all()
         return weighted_pick(candidates, min(count, len(candidates)), stats)
 
     if mode == "topic" and topic_id:
@@ -304,13 +317,14 @@ def matching_active_sessions_query(
 def find_active_session(
     db: Session,
     *,
+    user: User | None = None,
     mode: str,
     topic_id: int | None = None,
     readiness_level: int | None = None,
     difficulty: str | None = None,
 ) -> TestSession | None:
     exam = get_default_exam(db)
-    user = get_default_user(db)
+    user = user or get_default_user(db)
     return (
         matching_active_sessions_query(
             db,
@@ -354,15 +368,18 @@ def abandon_matching_active_sessions(
 def create_session(
     db: Session,
     *,
+    user: User | None = None,
     mode: str,
     count: int,
     topic_id: int | None = None,
+    topic_ids: list[int] | None = None,
     readiness_level: int | None = None,
     difficulty: str | None = None,
+    difficulties: list[str] | None = None,
     restart: bool = False,
 ) -> TestSession:
     exam = get_default_exam(db)
-    user = get_default_user(db)
+    user = user or get_default_user(db)
     if restart:
         abandon_matching_active_sessions(
             db,
@@ -380,8 +397,10 @@ def create_session(
         mode=mode,
         count=count,
         topic_id=topic_id,
+        topic_ids=topic_ids,
         readiness_level=readiness_level,
         difficulty=difficulty,
+        difficulties=difficulties,
     )
     session = TestSession(
         user_id=user.id,
@@ -428,6 +447,7 @@ def session_payload(db: Session, session: TestSession, reveal_answered: bool = T
 def record_answer(
     db: Session,
     *,
+    user: User | None = None,
     session_id: int,
     question_id: int,
     selected_index: int | None = None,
@@ -435,6 +455,8 @@ def record_answer(
 ) -> dict[str, Any]:
     session = db.get(TestSession, session_id)
     if not session:
+        raise ValueError("Session not found")
+    if user is not None and session.user_id != user.id:
         raise ValueError("Session not found")
     q = db.get(Question, question_id)
     if not q:
@@ -460,9 +482,11 @@ def record_answer(
     return payload
 
 
-def finish_session(db: Session, session_id: int) -> dict[str, Any]:
+def finish_session(db: Session, session_id: int, user: User | None = None) -> dict[str, Any]:
     session = db.get(TestSession, session_id)
     if not session:
+        raise ValueError("Session not found")
+    if user is not None and session.user_id != user.id:
         raise ValueError("Session not found")
     session.status = "finished"
     session.finished_at = datetime.utcnow()
@@ -471,8 +495,8 @@ def finish_session(db: Session, session_id: int) -> dict[str, Any]:
     return session_payload(db, session)
 
 
-def build_stats(db: Session) -> dict[str, Any]:
-    user = get_default_user(db)
+def build_stats(db: Session, user: User | None = None) -> dict[str, Any]:
+    user = user or get_default_user(db)
     exam = get_default_exam(db)
     total_questions = db.query(Question).filter(Question.exam_id == exam.id, Question.source != "official").count()
     answers = (
@@ -536,8 +560,8 @@ def build_stats(db: Session) -> dict[str, Any]:
     }
 
 
-def export_progress(db: Session) -> dict[str, Any]:
-    user = get_default_user(db)
+def export_progress(db: Session, user: User | None = None) -> dict[str, Any]:
+    user = user or get_default_user(db)
     sessions = db.query(TestSession).filter(TestSession.user_id == user.id).order_by(TestSession.started_at).all()
     answers = (
         db.query(TestAnswer)
@@ -550,7 +574,7 @@ def export_progress(db: Session) -> dict[str, Any]:
         "format": "exam-prep-progress-v1",
         "exported_at": datetime.utcnow().isoformat(),
         "user": {"username": user.username},
-        "stats": build_stats(db),
+        "stats": build_stats(db, user),
         "sessions": [
             {
                 "id": s.id,
@@ -589,8 +613,8 @@ def export_progress(db: Session) -> dict[str, Any]:
 
 
 
-def reset_progress(db: Session) -> dict[str, Any]:
-    user = get_default_user(db)
+def reset_progress(db: Session, user: User | None = None) -> dict[str, Any]:
+    user = user or get_default_user(db)
     sessions = db.query(TestSession).filter(TestSession.user_id == user.id).all()
     session_ids = [s.id for s in sessions]
     answers_deleted = 0
@@ -609,10 +633,10 @@ def reset_progress(db: Session) -> dict[str, Any]:
     }
 
 
-def import_progress(db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+def import_progress(db: Session, payload: dict[str, Any], user: User | None = None) -> dict[str, Any]:
     if payload.get("format") != "exam-prep-progress-v1":
         raise ValueError("Unsupported progress format")
-    user = get_default_user(db)
+    user = user or get_default_user(db)
     exam = get_default_exam(db)
     question_by_ext = {q.external_id: q for q in db.query(Question).filter(Question.exam_id == exam.id).all()}
     topic_by_ext = {t.external_id: t for t in db.query(Topic).filter(Topic.exam_id == exam.id).all()}

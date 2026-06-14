@@ -1,7 +1,19 @@
-const api = (url, options = {}) => fetch(url, options).then(async r => {
-  if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
-  return r.json();
-});
+let authToken = localStorage.getItem('examPrepToken') || '';
+let currentUser = null;
+
+const api = async (url, options = {}) => {
+  const headers = {...(options.headers || {})};
+  if(authToken) headers.Authorization = `Bearer ${authToken}`;
+  const response = await fetch(url, {...options, headers});
+  const text = await response.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+  if(!response.ok){
+    if(response.status === 401 && !url.startsWith('/api/auth/')) showAuth();
+    throw new Error((data && data.detail) || response.statusText);
+  }
+  return data;
+};
 
 let topics = [];
 let currentSession = null;
@@ -21,22 +33,29 @@ const show = name => {
 const toast = msg => { const t=$('toast'); t.textContent=msg; t.classList.remove('hidden'); setTimeout(()=>t.classList.add('hidden'), 2500); };
 
 async function init(){
-  await loadTopics();
-  await loadSummary();
   bindEvents();
+  await checkAuth();
 }
 
 function bindEvents(){
-  document.querySelectorAll('.nav').forEach(b => b.onclick = () => { show(b.dataset.view); if(b.dataset.view==='errors') loadErrors(); if(b.dataset.view==='stats') loadStats(); if(b.dataset.view==='flashcards') initFlashcards(); });
+  document.querySelectorAll('.nav').forEach(b => b.onclick = () => { show(b.dataset.view); if(b.dataset.view==='errors') loadErrors(); if(b.dataset.view==='stats') loadStats(); if(b.dataset.view==='flashcards') initFlashcards(); if(b.dataset.view==='theory') renderTheoryTopic(); });
   document.querySelectorAll('.mode').forEach(b => b.onclick = () => startTest({mode:b.dataset.mode, count:20}));
   document.querySelectorAll('.readiness').forEach(b => b.onclick = () => startTest({mode:'readiness', readiness_level:Number(b.dataset.level), count:20}));
   document.querySelectorAll('.difficulty').forEach(b => b.onclick = () => startTest({mode:'difficulty', difficulty:b.dataset.difficulty, count:1000}));
+  $('builderStart').onclick = startCustomFlow;
+  $('builderAllTopics').onclick = () => setBuilderTopics(true);
+  $('builderClearTopics').onclick = () => setBuilderTopics(false);
   $('backHome').onclick = () => { show('dashboard'); loadSummary(); };
   $('prevBtn').onclick = prevQuestion;
   $('checkBtn').onclick = checkCurrent;
   $('nextBtn').onclick = nextQuestion;
   $('exportBtn').onclick = exportProgress;
   $('importFile').onchange = importProgress;
+  $('loginBtn').onclick = () => authSubmit('login');
+  $('registerBtn').onclick = () => authSubmit('register');
+  $('logoutBtn').onclick = logout;
+  $('openTheoryBtn').onclick = renderTheoryTopic;
+  $('theorySelect').onchange = renderTheoryTopic;
   $('flashPrev').onclick = prevFlashcard;
   $('flashNext').onclick = nextFlashcard;
   $('flashFlip').onclick = flipFlashcard;
@@ -45,15 +64,116 @@ function bindEvents(){
   $('flashcard').onkeydown = (event) => { if(event.key === 'Enter' || event.key === ' '){ event.preventDefault(); flipFlashcard(); } };
 }
 
+async function checkAuth(){
+  if(!authToken){ showAuth(); return; }
+  try{
+    currentUser = await api('/api/auth/me');
+    await showApp();
+  }catch{
+    authToken = '';
+    localStorage.removeItem('examPrepToken');
+    showAuth();
+  }
+}
+
+function showAuth(){
+  $('authView').classList.remove('hidden');
+  $('appLayout').classList.add('hidden');
+  $('userBox').classList.add('hidden');
+  $('logoutBtn').classList.add('hidden');
+  $('exportBtn').classList.add('hidden');
+  $('importLabel').classList.add('hidden');
+}
+
+async function showApp(){
+  $('authView').classList.add('hidden');
+  $('appLayout').classList.remove('hidden');
+  $('userBox').classList.remove('hidden');
+  $('logoutBtn').classList.remove('hidden');
+  $('exportBtn').classList.remove('hidden');
+  $('importLabel').classList.remove('hidden');
+  $('userBox').textContent = `Пользователь: ${currentUser.username}`;
+  await loadTopics();
+  await loadSummary();
+  show('dashboard');
+}
+
+async function authSubmit(mode){
+  const username = $('authUsername').value.trim();
+  const password = $('authPassword').value;
+  if(username.length < 3 || password.length < 4){ toast('Логин от 3 символов, пароль от 4 символов'); return; }
+  const endpoint = mode === 'register' ? '/api/auth/register' : '/api/auth/login';
+  try{
+    const result = await api(endpoint, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username, password})});
+    authToken = result.token;
+    currentUser = result.user;
+    localStorage.setItem('examPrepToken', authToken);
+    toast(mode === 'register' ? 'Аккаунт создан' : 'Вход выполнен');
+    await showApp();
+  }catch(err){
+    toast(err.message || 'Ошибка входа');
+  }
+}
+
+async function logout(){
+  try{ await api('/api/auth/logout', {method:'POST'}); }catch{}
+  authToken = '';
+  currentUser = null;
+  localStorage.removeItem('examPrepToken');
+  showAuth();
+}
+
 async function loadTopics(){
   topics = await api('/api/topics');
   $('topicsList').innerHTML = topics.map(t => `
     <article class="topic-card">
       <h3>${t.external_id}. ${escapeHtml(t.title)}</h3>
       <p class="muted">Вопросов: ${t.questions_count}</p>
-      <button onclick="startTest({mode:'topic', topic_id:${t.id}, count:20})">Тренировать тему</button>
+      <div class="topic-buttons">
+        <button onclick="startTest({mode:'topic', topic_id:${t.id}, count:20})">Тренировать тему</button>
+        <button class="secondary" onclick="openTheory(${t.id})">Открыть теорию</button>
+      </div>
     </article>
   `).join('');
+  $('theorySelect').innerHTML = topics.map(t => `<option value="${t.id}">${t.external_id}. ${escapeHtml(t.title)}</option>`).join('');
+  $('builderTopics').innerHTML = topics.map(t => `
+    <label><input class="builder-topic" type="checkbox" value="${t.id}" checked> ${t.external_id}. ${escapeHtml(t.title)}</label>
+  `).join('');
+  buildFlashcards();
+}
+
+function setBuilderTopics(checked){
+  document.querySelectorAll('.builder-topic').forEach(input => input.checked = checked);
+}
+
+async function startCustomFlow(){
+  const topic_ids = [...document.querySelectorAll('.builder-topic:checked')].map(x => Number(x.value));
+  const difficulties = [...document.querySelectorAll('.builder-difficulty:checked')].map(x => x.value);
+  const count = Math.max(1, Math.min(1000, Number($('builderCount').value || 20)));
+  if(!topic_ids.length){ toast('Выберите хотя бы одну тему'); return; }
+  if(!difficulties.length){ toast('Выберите хотя бы одну сложность'); return; }
+  await startTest({mode:'custom', topic_ids, difficulties, count});
+}
+
+function openTheory(topicId){
+  $('theorySelect').value = String(topicId);
+  show('theory');
+  renderTheoryTopic();
+}
+
+function renderTheoryTopic(){
+  if(!topics.length){
+    $('theoryPanel').innerHTML = '<h3>Темы ещё не загружены</h3>';
+    return;
+  }
+  const selectedId = Number($('theorySelect').value || topics[0].id);
+  const topic = topics.find(t => t.id === selectedId) || topics[0];
+  $('theorySelect').value = String(topic.id);
+  $('theoryPanel').innerHTML = `
+    <h3>${topic.external_id}. ${escapeHtml(topic.title)}</h3>
+    <div class="theory">${renderTheory(topic.theory || 'Теория для темы пока не заполнена.')}</div>
+  `;
+  if (window.MathJax) MathJax.typesetPromise();
 }
 
 async function loadSummary(){
@@ -71,7 +191,7 @@ async function loadSummary(){
 async function startTest(payload){
   lastFeedback = null;
 
-  if(!payload.restart){
+  if(!payload.restart && payload.mode !== 'custom'){
     const active = await findActiveSession(payload);
     if(active.session && active.session.questions?.length){
       const continueSession = await showModal({
@@ -412,6 +532,7 @@ function renderTheory(raw){
 
 function labelDifficulty(d){ return {very_easy:'самый простой', easy:'простой', medium:'средний', hard:'сложный'}[d] || d; }
 function labelMode(s){
+  if(s.mode === 'custom') return 'Конструктор потока';
   if(s.mode === 'difficulty') return `Все вопросы: ${labelDifficulty(s.difficulty)}`;
   if(s.mode === 'readiness') return `Готовность ${s.readiness_level}%`;
   if(s.mode === 'topic') return 'Тема';

@@ -17,15 +17,31 @@
       <p>Сервис подготовки к экзамену: темы, адаптивные тесты, статистика, ошибки и экспорт прогресса.</p>
     </div>
     <div class="hero-actions">
-      <button id="exportBtn" class="secondary">Экспорт прогресса</button>
-      <label class="import-label secondary">Импорт прогресса<input id="importFile" type="file" accept="application/json" hidden /></label>
+      <div id="userBox" class="user-box hidden"></div>
+      <button id="logoutBtn" class="secondary hidden">Выйти</button>
+      <button id="exportBtn" class="secondary hidden">Экспорт прогресса</button>
+      <label id="importLabel" class="import-label secondary hidden">Импорт прогресса<input id="importFile" type="file" accept="application/json" hidden /></label>
     </div>
   </header>
 
-  <main class="layout">
+  <section id="authView" class="auth-screen">
+    <div class="auth-card">
+      <h2>Личный кабинет</h2>
+      <p class="muted">Войди или создай аккаунт, чтобы прогресс, ошибки, карточки и статистика хранились отдельно для каждого пользователя.</p>
+      <label>Логин<input id="authUsername" autocomplete="username" placeholder="например, andrej" /></label>
+      <label>Пароль<input id="authPassword" type="password" autocomplete="current-password" placeholder="минимум 4 символа" /></label>
+      <div class="auth-actions">
+        <button id="loginBtn">Войти</button>
+        <button id="registerBtn" class="secondary">Зарегистрироваться</button>
+      </div>
+    </div>
+  </section>
+
+  <main id="appLayout" class="layout hidden">
     <aside class="sidebar">
       <button data-view="dashboard" class="nav active">Главная</button>
       <button data-view="topics" class="nav">Темы</button>
+      <button data-view="theory" class="nav">Теория</button>
       <button data-view="flashcards" class="nav">Карточки</button>
       <button data-view="errors" class="nav">Ошибки</button>
       <button data-view="stats" class="nav">Аналитика</button>
@@ -65,6 +81,36 @@
           </div>
         </div>
 
+        <div class="card builder-card">
+          <h2>Конструктор потока вопросов</h2>
+          <p class="muted">Выбери несколько тем и пул сложностей. В тест будут попадаться только вопросы, которые подходят под выбранные фильтры.</p>
+          <div class="builder-grid">
+            <div>
+              <div class="builder-head">
+                <h3>Темы</h3>
+                <div class="mini-actions">
+                  <button id="builderAllTopics" class="secondary" type="button">Все</button>
+                  <button id="builderClearTopics" class="secondary" type="button">Снять</button>
+                </div>
+              </div>
+              <div id="builderTopics" class="builder-list"></div>
+            </div>
+            <div>
+              <h3>Сложности</h3>
+              <div class="builder-list compact">
+                <label><input class="builder-difficulty" type="checkbox" value="very_easy" checked> Самые простые</label>
+                <label><input class="builder-difficulty" type="checkbox" value="easy" checked> Простые</label>
+                <label><input class="builder-difficulty" type="checkbox" value="medium" checked> Средние</label>
+                <label><input class="builder-difficulty" type="checkbox" value="hard"> Сложные</label>
+              </div>
+              <label class="builder-count">Количество вопросов
+                <input id="builderCount" type="number" min="1" max="1000" value="20">
+              </label>
+              <button id="builderStart" type="button">Запустить поток</button>
+            </div>
+          </div>
+        </div>
+
         <div class="card" id="summaryCard"></div>
 
         <div class="card danger-zone main-reset">
@@ -79,6 +125,19 @@
           <h2>Темы</h2>
           <div id="topicsList" class="topic-list"></div>
         </div>
+      </section>
+
+
+      <section id="theory" class="view">
+        <div class="card">
+          <h2>Теория по темам</h2>
+          <p class="muted">Выбери тему, чтобы открыть краткую теорию, формулы и основные идеи.</p>
+          <div class="topic-controls">
+            <select id="theorySelect"></select>
+            <button id="openTheoryBtn" class="secondary">Показать теорию</button>
+          </div>
+        </div>
+        <article id="theoryPanel" class="card theory-panel"></article>
       </section>
 
       <section id="test" class="view">
