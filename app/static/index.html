@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Численные методы — подготовка к экзамену</title>
+  <script>
+    window.MathJax = { tex: { inlineMath: [['\\(','\\)']], displayMath: [['\\[','\\]']] }, svg: { fontCache: 'global' } };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <h1>Численные методы</h1>
+      <p>Сервис подготовки к экзамену: темы, адаптивные тесты, статистика, ошибки и экспорт прогресса.</p>
+    </div>
+    <div class="hero-actions">
+      <button id="exportBtn" class="secondary">Экспорт прогресса</button>
+      <label class="import-label secondary">Импорт прогресса<input id="importFile" type="file" accept="application/json" hidden /></label>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <button data-view="dashboard" class="nav active">Главная</button>
+      <button data-view="topics" class="nav">Темы</button>
+      <button data-view="flashcards" class="nav">Карточки</button>
+      <button data-view="errors" class="nav">Ошибки</button>
+      <button data-view="stats" class="nav">Аналитика</button>
+    </aside>
+
+    <section class="content">
+      <section id="dashboard" class="view active">
+        <div class="card">
+          <h2>Быстрый старт</h2>
+          <div class="grid cards">
+            <button class="mode" data-mode="exam"><strong>Экзамен</strong><span>20 вопросов как на экзамене</span></button>
+            <button class="mode" data-mode="official"><strong>Образец</strong><span>20 вопросов из образца</span></button>
+            <button class="mode" data-mode="errors"><strong>Повторить ошибки</strong><span>Только проблемные вопросы</span></button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Подготовка по уровню готовности</h2>
+          <p class="muted">Чем выше уровень, тем больше средних и сложных вопросов.</p>
+          <div class="readiness-row">
+            <button class="readiness" data-level="30">30%</button>
+            <button class="readiness" data-level="50">50%</button>
+            <button class="readiness" data-level="70">70%</button>
+            <button class="readiness" data-level="90">90%</button>
+            <button class="readiness" data-level="100">100%</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Пройти все вопросы по сложности</h2>
+          <p class="muted">Запускает сразу весь банк выбранного уровня: самые простые, простые, средние или сложные вопросы.</p>
+          <div class="difficulty-row">
+            <button class="difficulty" data-difficulty="very_easy">Самые простые</button>
+            <button class="difficulty" data-difficulty="easy">Простые</button>
+            <button class="difficulty" data-difficulty="medium">Средние</button>
+            <button class="difficulty" data-difficulty="hard">Сложные</button>
+          </div>
+        </div>
+
+        <div class="card" id="summaryCard"></div>
+
+        <div class="card danger-zone main-reset">
+          <h3>Сброс прогресса</h3>
+          <p>Удалит историю тестов, ответы, ошибки, активные сессии и статистику. Банк вопросов останется на месте.</p>
+          <button class="danger" onclick="resetProgress()">Сбросить весь прогресс</button>
+        </div>
+      </section>
+
+      <section id="topics" class="view">
+        <div class="card">
+          <h2>Темы</h2>
+          <div id="topicsList" class="topic-list"></div>
+        </div>
+      </section>
+
+      <section id="test" class="view">
+        <div class="test-top">
+          <button id="backHome" class="secondary">← На главную</button>
+          <div id="testMeta" class="badge"></div>
+        </div>
+        <div class="progress"><div id="progressBar"></div></div>
+        <article class="card question-card">
+          <div id="questionCounter" class="muted"></div>
+          <h2 id="questionText"></h2>
+          <div id="answerArea"></div>
+          <div class="actions">
+            <button id="prevBtn" class="secondary">← Предыдущий</button>
+            <button id="checkBtn">Проверить</button>
+            <button id="nextBtn" class="secondary">Дальше →</button>
+          </div>
+          <div id="feedback" class="feedback hidden"></div>
+        </article>
+      </section>
+
+
+      <section id="flashcards" class="view">
+        <div class="card">
+          <h2>Карточки для запоминания теории</h2>
+          <p class="muted">Формат Quizlet: сначала попробуй вспомнить теорию по теме, затем переверни карточку и проверь себя.</p>
+          <div class="flashcard-actions">
+            <button id="flashPrev" class="secondary">← Предыдущая</button>
+            <button id="flashFlip">Перевернуть</button>
+            <button id="flashNext" class="secondary">Следующая →</button>
+            <button id="flashShuffle" class="secondary">Перемешать</button>
+          </div>
+        </div>
+
+        <div class="flashcard-wrap">
+          <div id="flashProgress" class="badge"></div>
+          <article id="flashcard" class="flashcard" role="button" tabindex="0" aria-label="Карточка теории"></article>
+        </div>
+      </section>
+
+      <section id="errors" class="view">
+        <div class="card">
+          <h2>Ошибки</h2>
+          <div id="errorsList"></div>
+        </div>
+      </section>
+
+      <section id="stats" class="view">
+        <div class="card">
+          <h2>Аналитика и прогресс</h2>
+          <div id="statsPanel"></div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <div id="appModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-card">
+      <h3 id="modalTitle"></h3>
+      <p id="modalMessage"></p>
+      <div id="modalExtra" class="modal-extra"></div>
+      <div class="modal-actions">
+        <button id="modalCancel" class="secondary" type="button">Отмена</button>
+        <button id="modalConfirm" type="button">ОК</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+services:
+  exam-prep:
+    build: .
+    container_name: numerical-methods-exam-prep
+    ports:
+      - "8000:8000"
+    volumes:
+      - exam_prep_sqlite:/app/runtime
+    environment:
+      DATABASE_URL: sqlite:////app/runtime/app.db
+    restart: unless-stopped
+
+volumes:
+  exam_prep_sqlite:
