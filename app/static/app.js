@@ -32,7 +32,26 @@ const show = name => {
 };
 const toast = msg => { const t=$('toast'); t.textContent=msg; t.classList.remove('hidden'); setTimeout(()=>t.classList.add('hidden'), 2500); };
 
+function initTheme(){
+  const saved = localStorage.getItem('examPrepTheme') || 'light';
+  applyTheme(saved);
+}
+
+function applyTheme(theme){
+  const normalized = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = normalized;
+  localStorage.setItem('examPrepTheme', normalized);
+  const btn = $('themeToggle');
+  if(btn) btn.textContent = normalized === 'dark' ? '☀️ Светлая тема' : '🌙 Тёмная тема';
+}
+
+function toggleTheme(){
+  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  applyTheme(next);
+}
+
 async function init(){
+  initTheme();
   bindEvents();
   await checkAuth();
 }
@@ -52,6 +71,7 @@ function bindEvents(){
   $('exportBtn').onclick = exportProgress;
   $('importBtn').onclick = () => { $('importFile').value = ''; $('importFile').click(); };
   $('importFile').onchange = importProgress;
+  $('themeToggle').onclick = toggleTheme;
   $('loginBtn').onclick = () => authSubmit('login');
   $('registerBtn').onclick = () => authSubmit('register');
   $('logoutBtn').onclick = logout;

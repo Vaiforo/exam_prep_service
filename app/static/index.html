@@ -4,6 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Численные методы — подготовка к экзамену</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="manifest" href="/site.webmanifest" />
+  <script>try{document.documentElement.dataset.theme=localStorage.getItem('examPrepTheme')||'light'}catch{document.documentElement.dataset.theme='light'}</script>
   <script>
     window.MathJax = { tex: { inlineMath: [['\\(','\\)']], displayMath: [['\\[','\\]']] }, svg: { fontCache: 'global' } };
   </script>
@@ -13,10 +17,11 @@
 <body>
   <header class="hero">
     <div>
-      <h1>Численные методы</h1>
+      <h1 class="brand-title"><img src="/site-icon.png" alt="" class="site-logo"> <span>Численные методы</span></h1>
       <p>Сервис подготовки к экзамену: темы, адаптивные тесты, статистика, ошибки и экспорт прогресса.</p>
     </div>
     <div class="hero-actions">
+      <button id="themeToggle" class="secondary" type="button">🌙 Тёмная тема</button>
       <div id="userBox" class="user-box hidden"></div>
       <button id="logoutBtn" class="secondary hidden">Выйти</button>
       <button id="exportBtn" class="secondary hidden">Экспорт прогресса</button>

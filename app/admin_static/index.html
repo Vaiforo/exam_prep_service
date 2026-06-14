@@ -4,15 +4,21 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Админ-панель — Численные методы</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <script>try{document.documentElement.dataset.theme=localStorage.getItem('examPrepTheme')||'light'}catch{document.documentElement.dataset.theme='light'}</script>
   <link rel="stylesheet" href="/admin-static/admin.css">
 </head>
 <body>
   <header class="top">
     <div>
-      <h1>Админ-панель</h1>
+      <h1 class="brand-title"><img src="/site-icon.png" alt="" class="site-logo"> <span>Админ-панель</span></h1>
       <p>Управление пользователями, паролями и прогрессом.</p>
     </div>
-    <button id="logoutBtn" class="secondary hidden">Выйти</button>
+    <div class="top-actions">
+      <button id="adminThemeToggle" class="secondary" type="button">🌙 Тёмная тема</button>
+      <button id="logoutBtn" class="secondary hidden">Выйти</button>
+    </div>
   </header>
 
   <main class="shell">

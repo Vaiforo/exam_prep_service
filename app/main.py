@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import secrets
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -118,10 +119,13 @@ def migrate_auth_columns() -> None:
         columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(users)").fetchall()}
         if "password_hash" not in columns:
             connection.exec_driver_sql("ALTER TABLE users ADD COLUMN password_hash TEXT")
+        if "last_seen_at" not in columns:
+            connection.exec_driver_sql("ALTER TABLE users ADD COLUMN last_seen_at DATETIME")
 
 
 def create_auth_token(db: Session, user: User) -> str:
     token = secrets.token_urlsafe(48)
+    user.last_seen_at = datetime.utcnow()
     db.add(AuthToken(user_id=user.id, token=token))
     db.commit()
     return token
@@ -137,6 +141,9 @@ def get_current_user(authorization: Optional[str] = Header(default=None), db: Se
     user = db.get(User, auth.user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="Invalid user")
+    user.last_seen_at = datetime.utcnow()
+    db.commit()
+    db.refresh(user)
     return user
 
 
@@ -155,10 +162,15 @@ def get_admin_user(authorization: Optional[str] = Header(default=None)) -> str:
 
 def user_summary(db: Session, user: User) -> dict[str, Any]:
     stats = build_stats(db, user)
+    online_timeout = int(os.getenv("ONLINE_TIMEOUT_SECONDS", "300"))
+    is_online = bool(user.last_seen_at and datetime.utcnow() - user.last_seen_at <= timedelta(seconds=online_timeout))
     return {
         "id": user.id,
         "username": user.username,
         "created_at": user.created_at.isoformat(),
+        "last_seen_at": user.last_seen_at.isoformat() if user.last_seen_at else None,
+        "is_online": is_online,
+        "status": "online" if is_online else "offline",
         "has_password": bool(user.password_hash),
         "readiness": stats["readiness"],
         "accuracy": stats["accuracy"],
@@ -289,7 +301,15 @@ def me(user: User = Depends(get_current_user)) -> dict[str, Any]:
 def logout(authorization: Optional[str] = Header(default=None), db: Session = Depends(get_db)) -> dict[str, Any]:
     if authorization and authorization.lower().startswith("bearer "):
         token = authorization.split(" ", 1)[1].strip()
+        auth = db.scalar(select(AuthToken).where(AuthToken.token == token))
+        user_id = auth.user_id if auth else None
         db.query(AuthToken).filter(AuthToken.token == token).delete(synchronize_session=False)
+        if user_id is not None:
+            remaining_tokens = db.query(AuthToken).filter(AuthToken.user_id == user_id).count()
+            if remaining_tokens == 0:
+                user = db.get(User, user_id)
+                if user is not None:
+                    user.last_seen_at = None
         db.commit()
     return {"status": "ok"}
 

@@ -100,6 +100,7 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(80), unique=True, index=True, default="local")
     password_hash: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class AuthToken(Base):
