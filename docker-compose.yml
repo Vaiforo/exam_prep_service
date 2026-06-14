@@ -8,6 +8,10 @@ services:
       - exam_prep_sqlite:/app/runtime
     environment:
       DATABASE_URL: sqlite:////app/runtime/app.db
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ALLOW_QUESTION_IMPORT: ${ALLOW_QUESTION_IMPORT:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
     restart: unless-stopped
 
 volumes:

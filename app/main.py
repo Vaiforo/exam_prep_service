@@ -3,13 +3,14 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import secrets
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
@@ -36,14 +37,23 @@ from .services import (
 APP_DIR = Path(__file__).resolve().parent
 QUESTIONS_PATH = APP_DIR / "app_data" / "questions.json"
 
-app = FastAPI(title="Numerical Methods Exam Prep", version="1.0.0")
+app = FastAPI(
+    title="Numerical Methods Exam Prep",
+    version="1.0.0",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
+cors_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "*").split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=cors_origins or ["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+ADMIN_TOKENS: set[str] = set()
 
 
 class StartTestRequest(BaseModel):
@@ -66,6 +76,15 @@ class AnswerRequest(BaseModel):
 class AuthRequest(BaseModel):
     username: str = Field(min_length=3, max_length=80)
     password: str = Field(min_length=4, max_length=200)
+
+
+class AdminLoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=120)
+    password: str = Field(min_length=1, max_length=300)
+
+
+class AdminResetPasswordRequest(BaseModel):
+    new_password: str = Field(min_length=4, max_length=200)
 
 
 def normalize_username(username: str) -> str:
@@ -121,6 +140,34 @@ def get_current_user(authorization: Optional[str] = Header(default=None), db: Se
     return user
 
 
+def admin_credentials_configured() -> bool:
+    return bool(os.getenv("ADMIN_USERNAME") and os.getenv("ADMIN_PASSWORD"))
+
+
+def get_admin_user(authorization: Optional[str] = Header(default=None)) -> str:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Admin auth required")
+    token = authorization.split(" ", 1)[1].strip()
+    if token not in ADMIN_TOKENS:
+        raise HTTPException(status_code=401, detail="Invalid admin token")
+    return "admin"
+
+
+def user_summary(db: Session, user: User) -> dict[str, Any]:
+    stats = build_stats(db, user)
+    return {
+        "id": user.id,
+        "username": user.username,
+        "created_at": user.created_at.isoformat(),
+        "has_password": bool(user.password_hash),
+        "readiness": stats["readiness"],
+        "accuracy": stats["accuracy"],
+        "answered_unique": stats["answered_unique"],
+        "wrong_answers": stats["wrong_answers"],
+        "sessions_total": stats["sessions_total"],
+    }
+
+
 @app.on_event("startup")
 def startup() -> None:
     Base.metadata.create_all(bind=engine)
@@ -130,6 +177,84 @@ def startup() -> None:
         seed_questions_from_json(db, QUESTIONS_PATH, force=False)
     finally:
         db.close()
+
+
+@app.get("/admin")
+def admin_page() -> FileResponse:
+    return FileResponse(APP_DIR / "admin_static" / "index.html")
+
+
+@app.post("/api/admin/login")
+def admin_login(payload: AdminLoginRequest) -> dict[str, Any]:
+    expected_username = os.getenv("ADMIN_USERNAME", "")
+    expected_password = os.getenv("ADMIN_PASSWORD", "")
+    if not expected_username or not expected_password:
+        raise HTTPException(status_code=503, detail="Админ-доступ не настроен в .env")
+    username_ok = hmac.compare_digest(payload.username, expected_username)
+    password_ok = hmac.compare_digest(payload.password, expected_password)
+    if not (username_ok and password_ok):
+        raise HTTPException(status_code=401, detail="Неверный логин или пароль администратора")
+    token = secrets.token_urlsafe(48)
+    ADMIN_TOKENS.add(token)
+    return {"token": token, "admin": {"username": expected_username}}
+
+
+@app.get("/api/admin/me")
+def admin_me(admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    return {"username": os.getenv("ADMIN_USERNAME", "admin")}
+
+
+@app.post("/api/admin/logout")
+def admin_logout(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    if authorization and authorization.lower().startswith("bearer "):
+        ADMIN_TOKENS.discard(authorization.split(" ", 1)[1].strip())
+    return {"status": "ok"}
+
+
+@app.get("/api/admin/users")
+def admin_users(db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> list[dict[str, Any]]:
+    users = db.query(User).order_by(User.created_at.desc(), User.id.desc()).all()
+    return [user_summary(db, user) for user in users]
+
+
+@app.get("/api/admin/users/{user_id}/progress")
+def admin_user_progress(user_id: int, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return build_stats(db, user)
+
+
+@app.post("/api/admin/users/{user_id}/reset-password")
+def admin_reset_password(user_id: int, payload: AdminResetPasswordRequest, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.password_hash = hash_password(payload.new_password)
+    db.query(AuthToken).filter(AuthToken.user_id == user.id).delete(synchronize_session=False)
+    db.commit()
+    return {"status": "password_reset", "user_id": user.id}
+
+
+@app.post("/api/admin/users/{user_id}/reset-progress")
+def admin_reset_progress(user_id: int, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return reset_progress(db, user)
+
+
+@app.post("/api/admin/users/{user_id}/delete")
+def admin_delete_user(user_id: int, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    username = user.username
+    reset_progress(db, user)
+    db.query(AuthToken).filter(AuthToken.user_id == user.id).delete(synchronize_session=False)
+    db.delete(user)
+    db.commit()
+    return {"status": "deleted", "user_id": user_id, "username": username}
 
 
 @app.post("/api/auth/register")
@@ -183,7 +308,7 @@ def meta() -> dict[str, Any]:
 
 
 @app.get("/api/topics")
-def topics(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+def topics(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict[str, Any]]:
     exam = get_default_exam(db)
     rows = db.query(Topic).filter(Topic.exam_id == exam.id).order_by(Topic.external_id).all()
     return [
@@ -205,6 +330,7 @@ def questions(
     source: Optional[str] = None,
     limit: int = 50,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
     exam = get_default_exam(db)
     query = db.query(Question).options(selectinload(Question.choices), selectinload(Question.topic)).filter(Question.exam_id == exam.id)
@@ -343,6 +469,8 @@ def import_user_progress(payload: dict[str, Any], db: Session = Depends(get_db),
 
 @app.post("/api/import/questions")
 async def import_questions(file: UploadFile = File(...), force: bool = False, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    if os.getenv("ALLOW_QUESTION_IMPORT", "false").lower() not in {"1", "true", "yes"}:
+        raise HTTPException(status_code=403, detail="Импорт банка вопросов отключён на сервере")
     tmp = APP_DIR / "runtime_import_questions.json"
     tmp.write_bytes(await file.read())
     try:
@@ -350,6 +478,8 @@ async def import_questions(file: UploadFile = File(...), force: bool = False, db
     finally:
         tmp.unlink(missing_ok=True)
 
+
+app.mount("/admin-static", StaticFiles(directory=APP_DIR / "admin_static"), name="admin-static")
 
 # SPA must be mounted after API routes.
 app.mount("/", StaticFiles(directory=APP_DIR / "static", html=True), name="static")

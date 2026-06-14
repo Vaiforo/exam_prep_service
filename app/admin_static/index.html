@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Админ-панель — Численные методы</title>
+  <link rel="stylesheet" href="/admin-static/admin.css">
+</head>
+<body>
+  <header class="top">
+    <div>
+      <h1>Админ-панель</h1>
+      <p>Управление пользователями, паролями и прогрессом.</p>
+    </div>
+    <button id="logoutBtn" class="secondary hidden">Выйти</button>
+  </header>
+
+  <main class="shell">
+    <section id="loginView" class="panel login-panel">
+      <h2>Вход администратора</h2>
+      <p class="muted">Используются только логин и пароль из <code>.env</code>. Обычные аккаунты сюда не подходят.</p>
+      <label>Логин<input id="adminUsername" autocomplete="username"></label>
+      <label>Пароль<input id="adminPassword" type="password" autocomplete="current-password"></label>
+      <button id="loginBtn">Войти</button>
+      <div id="loginError" class="error hidden"></div>
+    </section>
+
+    <section id="adminView" class="hidden">
+      <section class="panel toolbar">
+        <button id="refreshBtn">Обновить пользователей</button>
+        <span id="adminInfo" class="muted"></span>
+      </section>
+
+      <section class="grid">
+        <div class="panel">
+          <h2>Пользователи</h2>
+          <div id="usersList" class="users-list"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Детали пользователя</h2>
+          <div id="userDetails" class="details muted">Выберите пользователя слева.</div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <div id="modal" class="modal hidden">
+    <div class="modal-card">
+      <h3 id="modalTitle"></h3>
+      <p id="modalText"></p>
+      <div class="modal-actions">
+        <button id="modalCancel" class="secondary">Отмена</button>
+        <button id="modalOk" class="danger">Подтвердить</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/admin-static/admin.js"></script>
+</body>
+</html>
