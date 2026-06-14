@@ -50,6 +50,7 @@ function bindEvents(){
   $('checkBtn').onclick = checkCurrent;
   $('nextBtn').onclick = nextQuestion;
   $('exportBtn').onclick = exportProgress;
+  $('importBtn').onclick = () => { $('importFile').value = ''; $('importFile').click(); };
   $('importFile').onchange = importProgress;
   $('loginBtn').onclick = () => authSubmit('login');
   $('registerBtn').onclick = () => authSubmit('register');
@@ -82,7 +83,7 @@ function showAuth(){
   $('userBox').classList.add('hidden');
   $('logoutBtn').classList.add('hidden');
   $('exportBtn').classList.add('hidden');
-  $('importLabel').classList.add('hidden');
+  $('importBtn').classList.add('hidden');
 }
 
 async function showApp(){
@@ -91,7 +92,7 @@ async function showApp(){
   $('userBox').classList.remove('hidden');
   $('logoutBtn').classList.remove('hidden');
   $('exportBtn').classList.remove('hidden');
-  $('importLabel').classList.remove('hidden');
+  $('importBtn').classList.remove('hidden');
   $('userBox').textContent = `Пользователь: ${currentUser.username}`;
   await loadTopics();
   await loadSummary();
@@ -454,10 +455,28 @@ async function exportProgress(){
 async function importProgress(e){
   const file = e.target.files[0];
   if(!file) return;
-  const payload = JSON.parse(await file.text());
-  const result = await api('/api/import/progress', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
-  toast(`Импортировано: ${result.restored_answers} ответов`);
-  await loadSummary();
+  try{
+    const text = await file.text();
+    const payload = JSON.parse(text);
+    if(payload.format !== 'exam-prep-progress-v1'){
+      throw new Error('Это не файл экспорта прогресса exam-prep-progress-v1');
+    }
+    const confirmed = await showModal({
+      title: 'Импортировать прогресс?',
+      message: 'Данные из файла полностью заменят текущий прогресс этого аккаунта. Перед импортом текущая история, ошибки и активные тесты будут удалены.',
+      confirmText: 'Импортировать',
+      cancelText: 'Отмена'
+    });
+    if(!confirmed) return;
+    const result = await api('/api/import/progress', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    toast(`Импортировано: ${result.restored_answers} ответов`);
+    await loadSummary();
+    if(document.getElementById('stats')?.classList.contains('active')) await loadStats();
+  }catch(err){
+    toast(err.message || 'Не удалось импортировать прогресс');
+  }finally{
+    e.target.value = '';
+  }
 }
 
 

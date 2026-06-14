@@ -640,9 +640,20 @@ def import_progress(db: Session, payload: dict[str, Any], user: User | None = No
     exam = get_default_exam(db)
     question_by_ext = {q.external_id: q for q in db.query(Question).filter(Question.exam_id == exam.id).all()}
     topic_by_ext = {t.external_id: t for t in db.query(Topic).filter(Topic.exam_id == exam.id).all()}
+    # Import is treated as a full restore for the current user, not as a merge.
+    # This avoids duplicated active sessions and unique constraint conflicts when
+    # the same progress file is imported more than once or over existing progress.
+    existing_session_ids = list(db.scalars(select(TestSession.id).where(TestSession.user_id == user.id)).all())
+    if existing_session_ids:
+        db.query(TestAnswer).filter(TestAnswer.session_id.in_(existing_session_ids)).delete(synchronize_session=False)
+        db.query(SessionQuestion).filter(SessionQuestion.session_id.in_(existing_session_ids)).delete(synchronize_session=False)
+        db.query(TestSession).filter(TestSession.id.in_(existing_session_ids)).delete(synchronize_session=False)
+        db.flush()
+
     restored_sessions = 0
     restored_answers = 0
     session_map: dict[int, int] = {}
+    session_question_seen: set[tuple[int, int]] = set()
     for s in payload.get("sessions", []):
         topic = topic_by_ext.get(s.get("topic_external_id")) if s.get("topic_external_id") is not None else None
         session = TestSession(
@@ -663,13 +674,17 @@ def import_progress(db: Session, payload: dict[str, Any], user: User | None = No
         if s.get("id") is not None:
             session_map[int(s["id"])] = session.id
         seen_questions: set[int] = set()
-        for pos, ext in enumerate(s.get("question_external_ids", [])):
+        next_position = 0
+        for ext in s.get("question_external_ids", []):
             q = question_by_ext.get(ext)
             if q and q.id not in seen_questions:
-                db.add(SessionQuestion(session_id=session.id, question_id=q.id, position=pos))
+                db.add(SessionQuestion(session_id=session.id, question_id=q.id, position=next_position))
                 seen_questions.add(q.id)
+                session_question_seen.add((session.id, q.id))
+                next_position += 1
         restored_sessions += 1
     fallback_session: TestSession | None = None
+    answer_seen: set[tuple[int, int]] = set()
     for idx, a in enumerate(payload.get("answers", [])):
         q = question_by_ext.get(a.get("question_external_id"))
         if not q:
@@ -683,19 +698,21 @@ def import_progress(db: Session, payload: dict[str, Any], user: User | None = No
                 db.flush()
                 restored_sessions += 1
             target_session_id = fallback_session.id
-        exists_sq = db.scalar(select(SessionQuestion).where(SessionQuestion.session_id == target_session_id, SessionQuestion.question_id == q.id))
-        if exists_sq is None:
+        sq_key = (target_session_id, q.id)
+        if sq_key not in session_question_seen:
             db.add(SessionQuestion(session_id=target_session_id, question_id=q.id, position=idx))
-        exists_answer = db.scalar(select(TestAnswer).where(TestAnswer.session_id == target_session_id, TestAnswer.question_id == q.id))
-        if exists_answer is None:
-            db.add(TestAnswer(
-                session_id=target_session_id,
-                question_id=q.id,
-                selected_index=a.get("selected_index"),
-                input_answer=a.get("input_answer"),
-                is_correct=bool(a.get("is_correct")),
-                answered_at=datetime.fromisoformat(a["answered_at"]) if a.get("answered_at") else datetime.utcnow(),
-            ))
-            restored_answers += 1
+            session_question_seen.add(sq_key)
+        if sq_key in answer_seen:
+            continue
+        db.add(TestAnswer(
+            session_id=target_session_id,
+            question_id=q.id,
+            selected_index=a.get("selected_index"),
+            input_answer=a.get("input_answer"),
+            is_correct=bool(a.get("is_correct")),
+            answered_at=datetime.fromisoformat(a["answered_at"]) if a.get("answered_at") else datetime.utcnow(),
+        ))
+        answer_seen.add(sq_key)
+        restored_answers += 1
     db.commit()
     return {"restored_sessions": restored_sessions, "restored_answers": restored_answers}

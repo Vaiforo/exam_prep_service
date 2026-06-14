@@ -55,7 +55,6 @@ class Question(Base):
     __table_args__ = (
         UniqueConstraint("exam_id", "external_id", name="uq_question_exam_external"),
         Index("ix_questions_exam_topic_difficulty", "exam_id", "topic_id", "difficulty"),
-        Index("ix_questions_source", "source"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
