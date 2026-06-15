@@ -54,3 +54,24 @@ html[data-theme="dark"] .flash-front{background:linear-gradient(135deg,#111827,#
 html[data-theme="dark"] .danger-zone{background:#2b1117!important;border-color:#7f1d1d!important}html[data-theme="dark"] .danger-zone h3{color:#fecdd3}html[data-theme="dark"] .danger-zone p{color:#fecdd3}html[data-theme="dark"] .confirm-warning{background:#2b1117;border-color:#7f1d1d;color:#fecdd3}
 html[data-theme="dark"] .progress{background:#1f2937}html[data-theme="dark"] .table th,html[data-theme="dark"] .table td{border-color:var(--line)}html[data-theme="dark"] .toast{background:#e5e7eb;color:#111827}
 @media(max-width:800px){.site-logo{width:42px;height:42px}.brand-title{gap:9px}}
+
+/* v18: stronger dark-mode contrast for buttons and theory blocks */
+html[data-theme="dark"] button:not(.danger),html[data-theme="dark"] .import-label{background:#2563eb!important;color:#f8fafc!important;border:1px solid #60a5fa!important;box-shadow:0 8px 20px rgba(37,99,235,.22)}
+html[data-theme="dark"] button:not(.danger):hover,html[data-theme="dark"] .import-label:hover{background:#3b82f6!important;color:#ffffff!important;border-color:#93c5fd!important}
+html[data-theme="dark"] button.secondary,html[data-theme="dark"] .secondary,html[data-theme="dark"] #themeToggle{background:#1e293b!important;color:#e0f2fe!important;border:1px solid #38bdf8!important;box-shadow:none!important}
+html[data-theme="dark"] button.secondary:hover,html[data-theme="dark"] .secondary:hover,html[data-theme="dark"] #themeToggle:hover{background:#0f3b5f!important;color:#ffffff!important;border-color:#7dd3fc!important}
+html[data-theme="dark"] .mode,html[data-theme="dark"] .readiness,html[data-theme="dark"] .difficulty{background:#1f2937!important;color:#f8fafc!important;border:1px solid #475569!important;box-shadow:0 8px 22px rgba(0,0,0,.18)}
+html[data-theme="dark"] .mode:hover,html[data-theme="dark"] .readiness:hover,html[data-theme="dark"] .difficulty:hover{background:#26364d!important;border-color:#60a5fa!important}
+html[data-theme="dark"] .nav{background:#111827!important;color:#dbeafe!important;border:1px solid #334155!important}html[data-theme="dark"] .nav.active,html[data-theme="dark"] .nav:hover{background:#2563eb!important;color:#ffffff!important;border-color:#93c5fd!important}
+html[data-theme="dark"] .theory,html[data-theme="dark"] .theory-panel .theory,html[data-theme="dark"] .feedback .theory,html[data-theme="dark"] .flash-back .theory,html[data-theme="dark"] .modal-extra .theory{background:#0b1220!important;color:#e5e7eb!important;border:1px solid #263244!important;border-left:4px solid #60a5fa!important;box-shadow:inset 0 0 0 1px rgba(96,165,250,.05)}
+html[data-theme="dark"] .theory *,html[data-theme="dark"] .theory p,html[data-theme="dark"] .theory li,html[data-theme="dark"] .theory em,html[data-theme="dark"] .theory strong{color:#e5e7eb!important}
+html[data-theme="dark"] .theory h5{color:#bfdbfe!important}html[data-theme="dark"] .theory hr{border-top-color:#263244!important}
+html[data-theme="dark"] .theory .math-block{background:#020617!important;color:#e5e7eb!important;border-color:#334155!important}html[data-theme="dark"] .theory .mjx-container,html[data-theme="dark"] .feedback .mjx-container{color:#e5e7eb!important}
+html[data-theme="dark"] .feedback.good,html[data-theme="dark"] .feedback.bad{background:#0f172a!important;color:#e5e7eb!important;border-color:#334155!important}
+html[data-theme="dark"] .feedback.good h3{color:#86efac!important}html[data-theme="dark"] .feedback.bad h3{color:#fda4af!important}
+
+/* v18: brighter correct/wrong states in dark mode */
+html[data-theme="dark"] .feedback.good{background:#052e1a!important;border:1px solid #22c55e!important;border-left:6px solid #4ade80!important;color:#dcfce7!important;box-shadow:0 0 0 1px rgba(74,222,128,.18),0 14px 32px rgba(34,197,94,.12)!important}
+html[data-theme="dark"] .feedback.bad{background:#3b0a13!important;border:1px solid #fb7185!important;border-left:6px solid #f43f5e!important;color:#ffe4e6!important;box-shadow:0 0 0 1px rgba(251,113,133,.18),0 14px 32px rgba(244,63,94,.12)!important}
+html[data-theme="dark"] .feedback.good h3,html[data-theme="dark"] .feedback.good b{color:#86efac!important}html[data-theme="dark"] .feedback.bad h3,html[data-theme="dark"] .feedback.bad b{color:#fda4af!important}
+html[data-theme="dark"] .option.correct{background:#064e3b!important;border-color:#4ade80!important;color:#dcfce7!important}html[data-theme="dark"] .option.wrong{background:#4c0519!important;border-color:#fb7185!important;color:#ffe4e6!important}

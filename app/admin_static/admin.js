@@ -145,8 +145,8 @@ async function loadUsers(){
         <span>Отвечено: <b>${u.answered_unique}</b></span>
         <span>Ошибок: <b>${u.wrong_answers}</b></span>
       </div>
-      <div class="muted">Создан: ${new Date(u.created_at).toLocaleString()}</div>
-      <div class="muted">${u.last_seen_at ? `Последняя активность: ${new Date(u.last_seen_at).toLocaleString()}` : 'Активности ещё не было'}</div>
+      <div class="muted">Создан: ${formatOmskDate(u.created_at)}</div>
+      <div class="muted">${u.last_seen_at ? `Последняя активность: ${formatOmskDate(u.last_seen_at)}` : 'Активности ещё не было'}</div>
     </article>
   `).join('') || '<p class="muted">Пользователей пока нет.</p>';
 }
@@ -219,6 +219,24 @@ function confirmModal(title, text){
     $('modalOk').onclick = () => cleanup(true);
     $('modalCancel').onclick = () => cleanup(false);
   });
+}
+
+
+function formatOmskDate(value){
+  if(!value) return '—';
+  const raw = String(value);
+  const normalized = /Z$|[+-]\d{2}:?\d{2}$/.test(raw) ? raw : `${raw}Z`;
+  const date = new Date(normalized);
+  if(Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Asia/Omsk',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  }).format(date) + ' (Омск)';
 }
 
 function escapeHtml(str){

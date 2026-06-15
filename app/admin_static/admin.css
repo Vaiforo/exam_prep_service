@@ -11,3 +11,9 @@ html[data-theme="dark"] input,html[data-theme="dark"] .password-input{background
 html[data-theme="dark"] .badge{background:#172554;color:#bfdbfe}html[data-theme="dark"] .status-badge.online{background:#064e3b;color:#bbf7d0}html[data-theme="dark"] .status-badge.offline{background:#1f2937;color:#cbd5e1}
 html[data-theme="dark"] .error{background:#2b1117;color:#fecdd3;border-color:#7f1d1d}html[data-theme="dark"] .toast{background:#e5e7eb;color:#111827}html[data-theme="dark"] code{background:#172554;color:#bfdbfe}
 @media(max-width:850px){.top-actions{display:grid;grid-template-columns:1fr}.top-actions button{width:100%}.site-logo{width:42px;height:42px}}
+
+/* v18: stronger dark-mode contrast for admin buttons */
+html[data-theme="dark"] button:not(.danger){background:#2563eb!important;color:#f8fafc!important;border:1px solid #60a5fa!important;box-shadow:0 8px 20px rgba(37,99,235,.22)}
+html[data-theme="dark"] button:not(.danger):hover{background:#3b82f6!important;border-color:#93c5fd!important;color:#fff!important}
+html[data-theme="dark"] button.secondary,html[data-theme="dark"] #adminThemeToggle{background:#1e293b!important;color:#e0f2fe!important;border:1px solid #38bdf8!important;box-shadow:none!important}
+html[data-theme="dark"] button.secondary:hover,html[data-theme="dark"] #adminThemeToggle:hover{background:#0f3b5f!important;border-color:#7dd3fc!important;color:#fff!important}
