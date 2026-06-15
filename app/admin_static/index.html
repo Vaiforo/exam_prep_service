@@ -13,7 +13,7 @@
   <header class="top">
     <div>
       <h1 class="brand-title"><img src="/site-icon.png" alt="" class="site-logo"> <span>Админ-панель</span></h1>
-      <p>Управление пользователями, паролями и прогрессом.</p>
+      <p>Управление пользователями, жалобами и состоянием сервиса.</p>
     </div>
     <div class="top-actions">
       <button id="adminThemeToggle" class="secondary" type="button">🌙 Тёмная тема</button>
@@ -32,46 +32,72 @@
     </section>
 
     <section id="adminView" class="hidden">
-      <section class="panel toolbar">
-        <button id="refreshBtn">Обновить пользователей</button>
-        <label class="inline-filter">Пользователи
-          <select id="userStatusFilter">
-            <option value="all">Все</option>
-            <option value="online">Онлайн</option>
-            <option value="offline">Оффлайн</option>
-          </select>
-        </label>
-        <span id="adminInfo" class="muted"></span>
-      </section>
+      <nav class="admin-tabs panel" aria-label="Разделы админ-панели">
+        <button class="admin-tab active" data-tab="users">Пользователи</button>
+        <button class="admin-tab" data-tab="reports">Жалобы на ошибки</button>
+        <button class="admin-tab" data-tab="metrics">Метрики</button>
+        <span id="adminInfo" class="muted admin-info"></span>
+      </nav>
 
-      <section class="grid">
-        <div class="panel">
-          <h2>Пользователи</h2>
-          <div id="usersList" class="users-list"></div>
-        </div>
-
-        <div class="panel">
-          <h2>Детали пользователя</h2>
-          <div id="userDetails" class="details muted">Выберите пользователя слева.</div>
-        </div>
-      </section>
-
-      <section class="panel reports-panel">
-        <div class="reports-head">
-          <div>
-            <h2>Жалобы на ошибки</h2>
-            <p class="muted">Здесь отображаются жалобы пользователей на вопросы и теорию.</p>
-          </div>
+      <section id="usersTab" class="admin-tab-panel">
+        <section class="panel toolbar">
+          <button id="refreshBtn">Обновить пользователей</button>
+          <label class="inline-filter">Поиск по логину
+            <input id="userSearch" class="search-input" type="search" placeholder="например: ivan">
+          </label>
           <label class="inline-filter">Статус
-            <select id="reportStatusFilter">
+            <select id="userStatusFilter">
               <option value="all">Все</option>
-              <option value="new">Новые</option>
-              <option value="reviewed">Просмотренные</option>
-              <option value="resolved">Решённые</option>
+              <option value="online">Онлайн</option>
+              <option value="offline">Оффлайн</option>
             </select>
           </label>
-        </div>
-        <div id="reportsList" class="reports-list"></div>
+        </section>
+
+        <section class="grid">
+          <div class="panel">
+            <h2>Пользователи</h2>
+            <div id="usersList" class="users-list"></div>
+          </div>
+
+          <div class="panel">
+            <h2>Детали пользователя</h2>
+            <div id="userDetails" class="details muted">Выберите пользователя слева.</div>
+          </div>
+        </section>
+      </section>
+
+      <section id="reportsTab" class="admin-tab-panel hidden">
+        <section class="panel reports-panel">
+          <div class="reports-head">
+            <div>
+              <h2>Жалобы на ошибки</h2>
+              <p class="muted">Здесь отображаются жалобы пользователей на вопросы и теорию.</p>
+            </div>
+            <label class="inline-filter">Статус
+              <select id="reportStatusFilter">
+                <option value="all">Все</option>
+                <option value="new">Новые</option>
+                <option value="reviewed">Просмотренные</option>
+                <option value="resolved">Решённые</option>
+              </select>
+            </label>
+          </div>
+          <div id="reportsList" class="reports-list"></div>
+        </section>
+      </section>
+
+      <section id="metricsTab" class="admin-tab-panel hidden">
+        <section class="panel metrics-panel">
+          <div class="reports-head">
+            <div>
+              <h2>Метрики сервиса</h2>
+              <p class="muted">Загрузка сайта, скорость API, ошибки, активность пользователей и состояние банка вопросов.</p>
+            </div>
+            <button id="refreshMetricsBtn" class="secondary">Обновить метрики</button>
+          </div>
+          <div id="metricsList" class="metrics-list"></div>
+        </section>
       </section>
 
     </section>

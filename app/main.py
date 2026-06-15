@@ -5,6 +5,8 @@ import hmac
 import json
 import os
 import secrets
+import time
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
@@ -37,7 +39,7 @@ from .services import (
 
 APP_DIR = Path(__file__).resolve().parent
 QUESTIONS_PATH = APP_DIR / "app_data" / "questions.json"
-APP_VERSION = os.getenv("APP_VERSION", "34")
+APP_VERSION = os.getenv("APP_VERSION", "36")
 
 app = FastAPI(
     title="Numerical Methods Exam Prep",
@@ -71,16 +73,52 @@ def render_versioned_html(path: Path) -> HTMLResponse:
 
 @app.middleware("http")
 async def no_cache_for_ui_assets(request, call_next):
+    started = time.perf_counter()
     response = await call_next(request)
+    duration_ms = (time.perf_counter() - started) * 1000
     path = request.url.path
+
+    METRICS["requests_total"] += 1
+    METRICS["last_response_ms"] = round(duration_ms, 2)
+    REQUEST_DURATIONS_MS.append(duration_ms)
+    if path.startswith("/api/"):
+        METRICS["api_requests_total"] += 1
+    else:
+        METRICS["static_requests_total"] += 1
+    if response.status_code >= 500:
+        METRICS["errors_total"] += 1
+
     if path in {"/", "/admin", "/index.html"} or path.endswith((".html", ".css", ".js")):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
+    response.headers["X-Response-Time-Ms"] = str(round(duration_ms, 2))
     return response
 
 
 ADMIN_TOKENS: set[str] = set()
+
+STARTED_AT = datetime.utcnow()
+REQUEST_DURATIONS_MS: deque[float] = deque(maxlen=5000)
+PAGE_LOAD_DURATIONS_MS: deque[float] = deque(maxlen=1000)
+METRICS: dict[str, Any] = {
+    "requests_total": 0,
+    "api_requests_total": 0,
+    "static_requests_total": 0,
+    "errors_total": 0,
+    "last_response_ms": 0.0,
+}
+
+def percentile(values: list[float], p: float) -> float:
+    if not values:
+        return 0.0
+    values = sorted(values)
+    idx = min(len(values) - 1, max(0, int(round((len(values) - 1) * p))))
+    return round(values[idx], 2)
+
+def average(values) -> float:
+    values = list(values)
+    return round(sum(values) / len(values), 2) if values else 0.0
 
 
 class StartTestRequest(BaseModel):
@@ -124,6 +162,12 @@ class ErrorReportRequest(BaseModel):
 
 class AdminReportStatusRequest(BaseModel):
     status: str = Field(pattern="^(new|reviewed|resolved)$")
+
+
+class PageLoadMetricRequest(BaseModel):
+    duration_ms: float = Field(ge=0, le=120000)
+    page: str = Field(default="main", max_length=80)
+    route: str = Field(default="/", max_length=200)
 
 
 def normalize_username(username: str) -> str:
@@ -307,9 +351,63 @@ def admin_logout(authorization: Optional[str] = Header(default=None)) -> dict[st
     return {"status": "ok"}
 
 
+
+
+@app.get("/api/admin/metrics")
+def admin_metrics(db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    now = datetime.utcnow()
+    online_timeout = int(os.getenv("ONLINE_TIMEOUT_SECONDS", "300"))
+    online_since = now - timedelta(seconds=online_timeout)
+    users_total = db.query(User).count()
+    online_users = db.query(User).filter(User.last_seen_at.isnot(None), User.last_seen_at >= online_since).count()
+    reports_total = db.query(ErrorReport).count()
+    reports_new = db.query(ErrorReport).filter(ErrorReport.status == "new").count()
+    reports_reviewed = db.query(ErrorReport).filter(ErrorReport.status == "reviewed").count()
+    reports_resolved = db.query(ErrorReport).filter(ErrorReport.status == "resolved").count()
+    active_sessions = db.query(TestSession).filter(TestSession.status == "active").count()
+    questions_total = db.query(Question).count()
+    topics_total = db.query(Topic).count()
+    request_values = list(REQUEST_DURATIONS_MS)
+    page_values = list(PAGE_LOAD_DURATIONS_MS)
+    return {
+        "timestamp": now.isoformat(),
+        "uptime_seconds": int((now - STARTED_AT).total_seconds()),
+        "requests_total": METRICS["requests_total"],
+        "api_requests_total": METRICS["api_requests_total"],
+        "static_requests_total": METRICS["static_requests_total"],
+        "errors_total": METRICS["errors_total"],
+        "avg_response_ms": average(request_values),
+        "p95_response_ms": percentile(request_values, 0.95),
+        "last_response_ms": METRICS["last_response_ms"],
+        "page_load_count": len(page_values),
+        "avg_page_load_ms": average(page_values),
+        "p95_page_load_ms": percentile(page_values, 0.95),
+        "last_page_load_ms": round(page_values[-1], 2) if page_values else 0.0,
+        "users_total": users_total,
+        "online_users": online_users,
+        "offline_users": max(users_total - online_users, 0),
+        "reports_total": reports_total,
+        "reports_new": reports_new,
+        "reports_reviewed": reports_reviewed,
+        "reports_resolved": reports_resolved,
+        "active_sessions": active_sessions,
+        "questions_total": questions_total,
+        "topics_total": topics_total,
+    }
+
+
+@app.post("/api/metrics/page-load")
+def record_page_load(payload: PageLoadMetricRequest, user: User = Depends(get_current_user)) -> dict[str, Any]:
+    PAGE_LOAD_DURATIONS_MS.append(float(payload.duration_ms))
+    return {"status": "ok"}
+
+
 @app.get("/api/admin/users")
-def admin_users(status: Optional[str] = None, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> list[dict[str, Any]]:
-    users = db.query(User).order_by(User.created_at.desc(), User.id.desc()).all()
+def admin_users(status: Optional[str] = None, q: Optional[str] = None, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> list[dict[str, Any]]:
+    query = db.query(User)
+    if q:
+        query = query.filter(User.username.ilike(f"%{q.strip().lower()}%"))
+    users = query.order_by(User.created_at.desc(), User.id.desc()).all()
     summaries = [user_summary(db, user) for user in users]
     if status in {"online", "offline"}:
         summaries = [item for item in summaries if item["status"] == status]

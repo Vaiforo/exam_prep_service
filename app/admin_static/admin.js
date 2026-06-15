@@ -1,6 +1,8 @@
 let adminToken = sessionStorage.getItem('examAdminToken') || '';
 let selectedUserId = null;
 let refreshTimer = null;
+let currentAdminTab = "users";
+let userSearchTimer = null;
 
 const $ = id => document.getElementById(id);
 const toast = msg => {
@@ -66,6 +68,7 @@ async function init(){
       showAdmin(me.username);
       await loadUsers();
       await loadReports();
+      await loadMetrics();
     }catch{
       adminToken = '';
       sessionStorage.removeItem('examAdminToken');
@@ -79,8 +82,11 @@ async function init(){
 function bind(){
   $('loginBtn').onclick = login;
   $('logoutBtn').onclick = logout;
-  $('refreshBtn').onclick = () => { loadUsers(); loadReports(); };
+  $('refreshBtn').onclick = () => { loadUsers(); };
+  $('refreshMetricsBtn').onclick = loadMetrics;
   $('userStatusFilter').onchange = loadUsers;
+  $('userSearch').oninput = () => { clearTimeout(userSearchTimer); userSearchTimer = setTimeout(loadUsers, 250); };
+  document.querySelectorAll('.admin-tab').forEach(btn => btn.onclick = () => switchAdminTab(btn.dataset.tab));
   $('reportStatusFilter').onchange = loadReports;
   $('adminThemeToggle').onclick = toggleTheme;
   $('adminPassword').addEventListener('keydown', event => {
@@ -91,13 +97,29 @@ function bind(){
 function startAutoRefresh(){
   if(refreshTimer) clearInterval(refreshTimer);
   refreshTimer = setInterval(() => {
-    if(adminToken){ loadUsers().catch(() => {}); loadReports().catch(() => {}); }
+    if(adminToken){
+      if(currentAdminTab === 'users') loadUsers().catch(() => {});
+      if(currentAdminTab === 'reports') loadReports().catch(() => {});
+      if(currentAdminTab === 'metrics') loadMetrics().catch(() => {});
+    }
   }, 30000);
 }
 
 function stopAutoRefresh(){
   if(refreshTimer) clearInterval(refreshTimer);
   refreshTimer = null;
+}
+
+function switchAdminTab(tab){
+  currentAdminTab = tab || 'users';
+  document.querySelectorAll('.admin-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === currentAdminTab));
+  ['users','reports','metrics'].forEach(name => {
+    const panel = $(`${name}Tab`);
+    if(panel) panel.classList.toggle('hidden', name !== currentAdminTab);
+  });
+  if(currentAdminTab === 'users') loadUsers().catch(() => {});
+  if(currentAdminTab === 'reports') loadReports().catch(() => {});
+  if(currentAdminTab === 'metrics') loadMetrics().catch(() => {});
 }
 
 async function login(){
@@ -117,6 +139,7 @@ async function login(){
     showAdmin(result.admin.username);
     await loadUsers();
     await loadReports();
+    await loadMetrics();
   }catch(err){
     $('loginError').textContent = err.message || 'Не удалось войти';
     $('loginError').classList.remove('hidden');
@@ -136,7 +159,11 @@ async function logout(){
 
 async function loadUsers(){
   const status = $('userStatusFilter')?.value || 'all';
-  const query = status && status !== 'all' ? `?status=${encodeURIComponent(status)}` : '';
+  const search = $('userSearch')?.value?.trim() || '';
+  const params = new URLSearchParams();
+  if(status && status !== 'all') params.set('status', status);
+  if(search) params.set('q', search);
+  const query = params.toString() ? `?${params.toString()}` : '';
   const users = await api(`/api/admin/users${query}`);
   $('usersList').innerHTML = users.map(u => `
     <article class="user-card ${u.id === selectedUserId ? 'active' : ''}" onclick="selectUser(${u.id})">
@@ -263,6 +290,43 @@ async function deleteUser(userId){
   $('userDetails').innerHTML = 'Выберите пользователя слева.';
   $('userDetails').classList.add('muted');
   await loadUsers();
+}
+
+async function loadMetrics(){
+  if(!$('metricsList')) return;
+  const m = await api('/api/admin/metrics');
+  const uptime = formatDuration(m.uptime_seconds || 0);
+  $('metricsList').innerHTML = `
+    <div class="summary-grid metrics-grid">
+      <div class="metric"><strong>${m.avg_response_ms} мс</strong><span>средний ответ сервера</span></div>
+      <div class="metric"><strong>${m.p95_response_ms} мс</strong><span>p95 ответов API/страниц</span></div>
+      <div class="metric"><strong>${m.avg_page_load_ms} мс</strong><span>средняя загрузка сайта</span></div>
+      <div class="metric"><strong>${m.p95_page_load_ms} мс</strong><span>p95 загрузки сайта</span></div>
+      <div class="metric"><strong>${m.requests_total}</strong><span>всего запросов</span></div>
+      <div class="metric"><strong>${m.errors_total}</strong><span>ошибок 5xx</span></div>
+      <div class="metric"><strong>${m.online_users}/${m.users_total}</strong><span>пользователей онлайн</span></div>
+      <div class="metric"><strong>${m.active_sessions}</strong><span>активных тестов</span></div>
+      <div class="metric"><strong>${m.reports_new}</strong><span>новых жалоб</span></div>
+      <div class="metric"><strong>${m.questions_total}</strong><span>вопросов в базе</span></div>
+    </div>
+    <div class="metrics-details">
+      <p><b>Uptime:</b> ${uptime}</p>
+      <p><b>API-запросов:</b> ${m.api_requests_total}; <b>статика/страницы:</b> ${m.static_requests_total}</p>
+      <p><b>Последний ответ сервера:</b> ${m.last_response_ms} мс</p>
+      <p><b>Последняя загрузка сайта:</b> ${m.last_page_load_ms || 0} мс; <b>замеров:</b> ${m.page_load_count}</p>
+      <p><b>Жалобы:</b> всего ${m.reports_total}, новые ${m.reports_new}, просмотренные ${m.reports_reviewed}, решённые ${m.reports_resolved}</p>
+      <p><b>Тем:</b> ${m.topics_total}; <b>обновлено:</b> ${formatOmskDate(m.timestamp)}</p>
+    </div>`;
+}
+
+function formatDuration(seconds){
+  seconds = Number(seconds || 0);
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if(h) return `${h} ч ${m} мин ${s} сек`;
+  if(m) return `${m} мин ${s} сек`;
+  return `${s} сек`;
 }
 
 function confirmModal(title, text){

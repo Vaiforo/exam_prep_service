@@ -107,6 +107,7 @@ function bindEvents(){
   $('flashcard').onkeydown = (event) => { if(event.key === 'Enter' || event.key === ' '){ event.preventDefault(); flipFlashcard(); } };
   $('reportSubmit').onclick = submitReport;
   $('reportCancel').onclick = closeReportPanel;
+  $('repeatErrorsTopBtn').onclick = () => startTest({mode:'errors', count:1000});
 }
 
 async function checkAuth(){
@@ -131,6 +132,7 @@ function showAuth(){
 }
 
 async function showApp(){
+  reportPageLoadMetric();
   $('authView').classList.add('hidden');
   $('appLayout').classList.remove('hidden');
   $('userBox').classList.remove('hidden');
@@ -166,6 +168,21 @@ async function logout(){
   currentUser = null;
   localStorage.removeItem('examPrepToken');
   showAuth();
+}
+
+function reportPageLoadMetric(){
+  try{
+    if(!authToken || sessionStorage.getItem('pageLoadMetricSent') === '1') return;
+    const nav = performance.getEntriesByType('navigation')[0];
+    const duration = nav ? nav.duration : performance.now();
+    if(!duration || duration < 0) return;
+    sessionStorage.setItem('pageLoadMetricSent', '1');
+    api('/api/metrics/page-load', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({duration_ms:duration, page:'main', route:location.pathname})
+    }).catch(() => {});
+  }catch{}
 }
 
 async function loadTopics(){
@@ -398,13 +415,21 @@ function copyPrompt(){
 
 async function loadErrors(){
   const rows = await api('/api/errors');
-  if(!rows.length){ $('errorsList').innerHTML = '<p class="muted">Ошибок пока нет.</p>'; return; }
+  const repeatBtn = $('repeatErrorsTopBtn');
+  if(!rows.length){
+    if(repeatBtn) repeatBtn.classList.add('hidden');
+    $('errorsList').innerHTML = '<p class="muted">Ошибок пока нет.</p>';
+    return;
+  }
+  if(repeatBtn){
+    repeatBtn.classList.remove('hidden');
+    repeatBtn.textContent = `Повторить ошибки (${rows.length})`;
+  }
   $('errorsList').innerHTML = rows.map(e => `
     <div class="error-item">
       <div class="muted">${new Date(e.answered_at).toLocaleString()} · ${escapeHtml(e.question.topic_title || '')}</div>
       <b>${e.question.prompt}</b>
       <p><b>Правильный ответ:</b> ${escapeHtml(String(e.question.correct_answer ?? ''))}</p>
-      <button onclick="startTest({mode:'errors', count:20})">Повторить ошибки</button>
     </div>`).join('');
   if (window.MathJax) MathJax.typesetPromise();
 }

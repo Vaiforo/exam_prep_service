@@ -105,3 +105,7 @@ html[data-theme="dark"] .theory h5{background:#111c30!important;color:#c7d2fe!im
 
 /* v33: simple/standard theory toggle */
 .theory-mode-toggle{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0 12px;padding:9px;border:1px solid var(--line);border-radius:12px;background:#f8fafc}.theory-mode-toggle span{font-weight:900;color:var(--muted)}.theory-mode-toggle button{padding:7px 10px!important;font-size:13px!important;border-radius:999px!important}.theory-mode-toggle button.active{background:#1d4ed8!important;color:#fff!important;border-color:#1d4ed8!important}html[data-theme="dark"] .theory-mode-toggle{background:#0b1220;border-color:#2b3a4d}html[data-theme="dark"] .theory-mode-toggle button.active{background:#1d4ed8!important;color:#fff!important;border-color:#3b82f6!important}
+
+
+/* v36: errors section top repeat button */
+.section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:12px}.section-head h2{margin:0 0 4px}.section-head p{margin:0}.section-head .danger{white-space:nowrap}@media(max-width:700px){.section-head{display:grid}.section-head .danger{width:100%}}
