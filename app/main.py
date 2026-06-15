@@ -37,7 +37,7 @@ from .services import (
 
 APP_DIR = Path(__file__).resolve().parent
 QUESTIONS_PATH = APP_DIR / "app_data" / "questions.json"
-APP_VERSION = os.getenv("APP_VERSION", "22")
+APP_VERSION = os.getenv("APP_VERSION", "24")
 
 app = FastAPI(
     title="Numerical Methods Exam Prep",
@@ -326,6 +326,11 @@ def login(payload: AuthRequest, db: Session = Depends(get_db)) -> dict[str, Any]
 @app.get("/api/auth/me")
 def me(user: User = Depends(get_current_user)) -> dict[str, Any]:
     return {"id": user.id, "username": user.username}
+
+
+@app.post("/api/auth/ping")
+def auth_ping(user: User = Depends(get_current_user)) -> dict[str, Any]:
+    return {"status": "ok", "last_seen_at": user.last_seen_at.isoformat() if user.last_seen_at else None}
 
 
 @app.post("/api/auth/logout")

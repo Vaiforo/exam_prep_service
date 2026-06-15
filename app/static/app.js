@@ -1,5 +1,7 @@
 let authToken = localStorage.getItem('examPrepToken') || '';
 let currentUser = null;
+let lastActivityPingAt = 0;
+let activityTrackingBound = false;
 
 const api = async (url, options = {}) => {
   const headers = {...(options.headers || {})};
@@ -32,6 +34,23 @@ const show = name => {
 };
 const toast = msg => { const t=$('toast'); t.textContent=msg; t.classList.remove('hidden'); setTimeout(()=>t.classList.add('hidden'), 2500); };
 
+async function pingActivity(force = false){
+  if(!authToken) return;
+  const now = Date.now();
+  if(!force && now - lastActivityPingAt < 15000) return;
+  lastActivityPingAt = now;
+  try{ await api('/api/auth/ping', {method:'POST'}); }catch{}
+}
+
+function bindActivityTracking(){
+  if(activityTrackingBound) return;
+  activityTrackingBound = true;
+  ['click', 'touchstart', 'keydown'].forEach(eventName => {
+    document.addEventListener(eventName, () => pingActivity(false), {passive:true});
+  });
+  setInterval(() => pingActivity(true), 60000);
+}
+
 function initTheme(){
   const saved = localStorage.getItem('examPrepTheme') || 'light';
   applyTheme(saved);
@@ -53,6 +72,7 @@ function toggleTheme(){
 async function init(){
   initTheme();
   bindEvents();
+  bindActivityTracking();
   await checkAuth();
 }
 
