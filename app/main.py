@@ -37,7 +37,7 @@ from .services import (
 
 APP_DIR = Path(__file__).resolve().parent
 QUESTIONS_PATH = APP_DIR / "app_data" / "questions.json"
-APP_VERSION = os.getenv("APP_VERSION", "32")
+APP_VERSION = os.getenv("APP_VERSION", "34")
 
 app = FastAPI(
     title="Numerical Methods Exam Prep",
@@ -161,6 +161,18 @@ def migrate_auth_columns() -> None:
             connection.exec_driver_sql("ALTER TABLE users ADD COLUMN last_seen_at DATETIME")
 
 
+def migrate_simple_theory_columns() -> None:
+    if engine.url.get_backend_name() != "sqlite":
+        return
+    with engine.begin() as connection:
+        topic_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(topics)").fetchall()}
+        if "simple_theory" not in topic_columns:
+            connection.exec_driver_sql("ALTER TABLE topics ADD COLUMN simple_theory TEXT DEFAULT ''")
+        question_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(questions)").fetchall()}
+        if "simple_theory" not in question_columns:
+            connection.exec_driver_sql("ALTER TABLE questions ADD COLUMN simple_theory TEXT DEFAULT ''")
+
+
 def create_auth_token(db: Session, user: User) -> str:
     token = secrets.token_urlsafe(48)
     user.last_seen_at = datetime.utcnow()
@@ -250,6 +262,7 @@ def report_summary(report: ErrorReport) -> dict[str, Any]:
 def startup() -> None:
     Base.metadata.create_all(bind=engine)
     migrate_auth_columns()
+    migrate_simple_theory_columns()
     db = SessionLocal()
     try:
         seed_questions_from_json(db, QUESTIONS_PATH, force=False)
@@ -450,6 +463,7 @@ def topics(db: Session = Depends(get_db), user: User = Depends(get_current_user)
             "external_id": t.external_id,
             "title": t.title,
             "theory": t.theory,
+            "simple_theory": t.simple_theory,
             "questions_count": db.query(Question).filter(Question.topic_id == t.id, Question.source != "official").count(),
         }
         for t in rows

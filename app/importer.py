@@ -42,14 +42,20 @@ def migrate_question_metadata(db: Session, exam: Exam, payload: dict[str, Any] |
     # questions.json improves formatting or fixes formulas.
     if payload is not None:
         topic_theory = {int(t["external_id"]): t.get("theory", "") for t in payload.get("topics", [])}
+        simple_topic_theory = {int(t["external_id"]): t.get("simple_theory", "") for t in payload.get("topics", [])}
         for topic in db.query(Topic).filter(Topic.exam_id == exam.id).all():
             if topic.external_id in topic_theory:
                 topic.theory = topic_theory[topic.external_id]
+            if topic.external_id in simple_topic_theory and simple_topic_theory[topic.external_id]:
+                topic.simple_theory = simple_topic_theory[topic.external_id]
 
         question_theory = {q["external_id"]: q.get("theory", "") for q in list(payload.get("questions", [])) + list(payload.get("official_sample", []))}
+        simple_question_theory = {q["external_id"]: q.get("simple_theory", "") for q in list(payload.get("questions", [])) + list(payload.get("official_sample", []))}
         for question in db.query(Question).filter(Question.exam_id == exam.id).all():
             if question.external_id in question_theory and question_theory[question.external_id]:
                 question.theory = question_theory[question.external_id]
+            if question.external_id in simple_question_theory and simple_question_theory[question.external_id]:
+                question.simple_theory = simple_question_theory[question.external_id]
 
     db.commit()
 
@@ -87,6 +93,7 @@ def seed_questions_from_json(db: Session, json_path: str | Path, force: bool = F
             external_id=int(t["external_id"]),
             title=t["title"],
             theory=t.get("theory", ""),
+            simple_theory=t.get("simple_theory", ""),
         )
         db.add(topic)
         db.flush()
@@ -106,6 +113,7 @@ def seed_questions_from_json(db: Session, json_path: str | Path, force: bool = F
             kind=q.get("kind", "mcq"),
             explanation=q.get("explanation", ""),
             theory=q.get("theory") or topic.theory,
+            simple_theory=q.get("simple_theory") or topic.simple_theory,
             source=q.get("source") or "theory",
             difficulty=q.get("difficulty") or "easy",
             correct_choice_index=q.get("correct_choice_index"),

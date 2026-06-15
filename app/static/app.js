@@ -25,6 +25,7 @@ let flashcards = [];
 let flashIndex = 0;
 let flashFlipped = false;
 let reportContext = null;
+let theoryMode = localStorage.getItem('examPrepTheoryMode') || 'standard';
 
 const $ = id => document.getElementById(id);
 const show = name => {
@@ -199,6 +200,26 @@ async function startCustomFlow(){
   await startTest({mode:'custom', topic_ids, difficulties, count});
 }
 
+function theoryModeToggleHtml(){
+  return `<div class="theory-mode-toggle" role="group" aria-label="Режим теории">
+    <span>Теория:</span>
+    <button type="button" class="secondary ${theoryMode === 'simple' ? 'active' : ''}" onclick="setTheoryMode('simple')">Простая</button>
+    <button type="button" class="secondary ${theoryMode === 'standard' ? 'active' : ''}" onclick="setTheoryMode('standard')">Стандартная</button>
+  </div>`;
+}
+
+function setTheoryMode(mode){
+  theoryMode = mode === 'simple' ? 'simple' : 'standard';
+  localStorage.setItem('examPrepTheoryMode', theoryMode);
+  if(document.getElementById('theory')?.classList.contains('active')) renderTheoryTopic();
+  if(document.getElementById('test')?.classList.contains('active') && currentSession) renderQuestion();
+  if(document.getElementById('flashcards')?.classList.contains('active')) renderFlashcard();
+}
+
+function pickTheory(standard, simple){
+  return theoryMode === 'simple' && simple ? simple : (standard || simple || 'Теория для темы пока не заполнена.');
+}
+
 function openTheory(topicId){
   $('theorySelect').value = String(topicId);
   show('theory');
@@ -218,7 +239,8 @@ function renderTheoryTopic(){
       <h3>${topic.external_id}. ${escapeHtml(topic.title)}</h3>
       <button class="report-btn" onclick="openTheoryReport(${topic.id})">Пожаловаться на ошибку</button>
     </div>
-    <div class="theory">${renderTheory(topic.theory || 'Теория для темы пока не заполнена.')}</div>
+    ${theoryModeToggleHtml()}
+    <div class="theory">${renderTheory(pickTheory(topic.theory, topic.simple_theory))}</div>
   `;
   if (window.MathJax) MathJax.typesetPromise();
 }
@@ -306,6 +328,7 @@ function renderQuestion(){
       correct_answer: q.correct_answer,
       explanation: q.explanation,
       theory: q.theory,
+      simple_theory: q.simple_theory,
       ai_prompt: q.ai_prompt
     });
   }
@@ -343,7 +366,8 @@ function renderFeedback(q, r){
       <h4>Краткая теория</h4>
       <button class="report-btn" onclick="openTheoryReport(${q.topic_id})">Пожаловаться на ошибку</button>
     </div>
-    <div class="theory">${renderTheory(r.theory || 'Теория для темы пока не заполнена.')}</div>
+    ${theoryModeToggleHtml()}
+    <div class="theory">${renderTheory(pickTheory(r.theory, r.simple_theory))}</div>
     <h4>Промпт для нейросети</h4>
     <div class="prompt-box" id="promptBox">${escapeHtml(r.ai_prompt || '')}</div>
     <button class="secondary" onclick="copyPrompt()">Скопировать промпт</button>
@@ -408,7 +432,8 @@ function buildFlashcards(){
     id: t.id,
     title: `${t.external_id}. ${t.title}`,
     front: `Вспомни краткую теорию по теме: ${t.title}`,
-    back: t.theory || 'Теория для этой темы пока не заполнена.'
+    back: t.theory || 'Теория для этой темы пока не заполнена.',
+    simpleBack: t.simple_theory || ''
   }));
 }
 
@@ -435,7 +460,8 @@ function renderFlashcard(){
         <button class="report-btn" onclick="event.stopPropagation(); openTheoryReport(${card.id})">Пожаловаться на ошибку</button>
       </div>
       <h3>${escapeHtml(card.title)}</h3>
-      <div class="theory">${renderTheory(card.back)}</div>
+      ${theoryModeToggleHtml()}
+      <div class="theory">${renderTheory(pickTheory(card.back, card.simpleBack))}</div>
     </div>` : `
     <div class="flash-face flash-front">
       <div class="muted">Вопрос</div>

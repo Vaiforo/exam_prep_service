@@ -53,6 +53,7 @@ def question_public(q: Question, include_answer: bool = False) -> dict[str, Any]
         "choices": [{"index": c.position, "text": c.text} for c in q.choices],
         "source": q.source,
         "difficulty": q.difficulty,
+        "simple_theory": q.simple_theory or (q.topic.simple_theory if q.topic else ""),
     }
     if include_answer:
         payload.update(answer_payload(q))
@@ -72,12 +73,14 @@ def answer_payload(q: Question) -> dict[str, Any]:
             "correct_answer": correct_text,
             "explanation": q.explanation,
             "theory": q.theory or (q.topic.theory if q.topic else ""),
+            "simple_theory": q.simple_theory or (q.topic.simple_theory if q.topic else ""),
         }
     return {
         "correct_choice_index": None,
         "correct_answer": q.answer_text,
         "explanation": q.explanation,
         "theory": q.theory or (q.topic.theory if q.topic else ""),
+        "simple_theory": q.simple_theory or (q.topic.simple_theory if q.topic else ""),
     }
 
 

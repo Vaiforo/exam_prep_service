@@ -45,6 +45,7 @@ class Topic(Base):
     external_id: Mapped[int] = mapped_column(Integer)
     title: Mapped[str] = mapped_column(String(255))
     theory: Mapped[str] = mapped_column(Text, default="")
+    simple_theory: Mapped[str] = mapped_column(Text, default="")
 
     exam: Mapped[Exam] = relationship("Exam", back_populates="topics")
     questions: Mapped[list[Question]] = relationship("Question", back_populates="topic")
@@ -65,6 +66,7 @@ class Question(Base):
     kind: Mapped[str] = mapped_column(String(20), default="mcq")
     explanation: Mapped[str] = mapped_column(Text, default="")
     theory: Mapped[str] = mapped_column(Text, default="")
+    simple_theory: Mapped[str] = mapped_column(Text, default="")
     source: Mapped[str] = mapped_column(String(40), default="theory", index=True)
     difficulty: Mapped[str] = mapped_column(String(20), default="easy", index=True)
     correct_choice_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
