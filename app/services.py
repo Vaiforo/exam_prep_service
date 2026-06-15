@@ -64,13 +64,51 @@ def question_public(q: Question, include_answer: bool = False) -> dict[str, Any]
     return payload
 
 
+
+
+def choice_text(q: Question, index: int | None) -> str | None:
+    if index is None:
+        return None
+    for choice in q.choices:
+        if choice.position == index:
+            return choice.text
+    return None
+
+
+def session_display_title(session: TestSession) -> str:
+    labels = {"very_easy": "самые простые", "easy": "простые", "medium": "средние", "hard": "сложные"}
+    if session.mode == "custom":
+        topic_nums = []
+        seen = set()
+        for item in session.items:
+            topic = item.question.topic
+            if topic and topic.external_id not in seen:
+                seen.add(topic.external_id)
+                topic_nums.append(topic.external_id)
+        topic_nums = sorted(topic_nums)
+        suffix = ", ".join(map(str, topic_nums[:8]))
+        if len(topic_nums) > 8:
+            suffix += ", ..."
+        return f"Поток: темы {suffix}" if suffix else "Конструктор потока"
+    if session.mode == "topic":
+        topic = None
+        if session.items:
+            topic = session.items[0].question.topic
+        return f"Тема {topic.external_id}. {topic.title}" if topic else "Тема"
+    if session.mode == "difficulty":
+        return f"Все вопросы: {labels.get(session.difficulty or '', session.difficulty or 'сложность')}"
+    if session.mode == "readiness":
+        return f"Готовность {session.readiness_level}%"
+    if session.mode == "official":
+        return "Образец"
+    if session.mode == "errors":
+        return "Ошибки"
+    return "Экзамен"
+
+
 def answer_payload(q: Question) -> dict[str, Any]:
     if q.kind == "mcq":
-        correct_text = None
-        for c in q.choices:
-            if c.position == q.correct_choice_index:
-                correct_text = c.text
-                break
+        correct_text = choice_text(q, q.correct_choice_index)
         return {
             "correct_choice_index": q.correct_choice_index,
             "correct_answer": correct_text,
@@ -423,26 +461,63 @@ def create_session(
     return session
 
 
+
+
+def session_restart_payload(session: TestSession) -> dict[str, Any]:
+    payload: dict[str, Any] = {"mode": session.mode, "count": session.total, "restart": True}
+    if session.mode == "topic" and session.topic_id:
+        payload["topic_id"] = session.topic_id
+    if session.mode == "readiness" and session.readiness_level is not None:
+        payload["readiness_level"] = session.readiness_level
+    if session.mode == "difficulty" and session.difficulty:
+        payload["difficulty"] = session.difficulty
+    if session.mode == "custom":
+        topic_ids = []
+        topic_seen = set()
+        difficulties = []
+        difficulty_seen = set()
+        for item in session.items:
+            question = item.question
+            if question.topic_id not in topic_seen:
+                topic_seen.add(question.topic_id)
+                topic_ids.append(question.topic_id)
+            if question.difficulty and question.difficulty not in difficulty_seen:
+                difficulty_seen.add(question.difficulty)
+                difficulties.append(question.difficulty)
+        payload["topic_ids"] = topic_ids
+        payload["difficulties"] = difficulties
+    return payload
+
+
 def session_payload(db: Session, session: TestSession, reveal_answered: bool = True) -> dict[str, Any]:
     answers = {a.question_id: a for a in session.answers}
     items = []
     for item in session.items:
         q = item.question
-        payload = question_public(q, include_answer=(reveal_answered and q.id in answers))
+        payload = question_public(q, include_answer=reveal_answered)
         answer = answers.get(q.id)
         if answer:
-            payload["user_answer"] = {"selected_index": answer.selected_index, "input_answer": answer.input_answer, "is_correct": answer.is_correct}
+            payload["user_answer"] = {
+                "selected_index": answer.selected_index,
+                "input_answer": answer.input_answer,
+                "is_correct": answer.is_correct,
+                "answer_text": choice_text(q, answer.selected_index) if q.kind == "mcq" else answer.input_answer,
+            }
         items.append({"position": item.position, "question": payload})
     return {
         "id": session.id,
+        "title": session_display_title(session),
         "mode": session.mode,
         "readiness_level": session.readiness_level,
         "topic_id": session.topic_id,
         "difficulty": session.difficulty,
         "status": session.status,
+        "started_at": session.started_at.isoformat(),
+        "finished_at": session.finished_at.isoformat() if session.finished_at else None,
         "total": session.total,
         "answered": len(answers),
         "correct_count": sum(1 for a in answers.values() if a.is_correct),
+        "restart_payload": session_restart_payload(session),
         "questions": items,
     }
 

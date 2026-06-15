@@ -53,6 +53,7 @@
       <button data-view="theory" class="nav">Теория</button>
       <button data-view="flashcards" class="nav">Карточки</button>
       <button data-view="errors" class="nav">Ошибки</button>
+      <button data-view="results" class="nav">Результаты</button>
       <button data-view="stats" class="nav">Аналитика</button>
       <button id="returnToTestBtn" class="nav return-test-btn hidden" type="button">Вернуться к тесту</button>
     </aside>
@@ -217,6 +218,27 @@
           </div>
           <div id="notificationsList" class="notifications-list"></div>
         </div>
+      </section>
+
+
+      <section id="results" class="view">
+        <div class="card">
+          <div class="section-head">
+            <div>
+              <h2>Результаты завершённых тестов</h2>
+              <p class="muted">Здесь хранятся полностью завершённые тесты. Открой любой результат, чтобы посмотреть каждый ответ отдельно.</p>
+            </div>
+            <button id="refreshResultsBtn" class="secondary" type="button">Обновить</button>
+          </div>
+          <div id="resultsList" class="notifications-list"></div>
+        </div>
+      </section>
+
+      <section id="resultDetail" class="view">
+        <div class="card">
+          <button id="backToResultsBtn" class="secondary" type="button">← К результатам</button>
+        </div>
+        <article id="resultDetailContent" class="card result-details"></article>
       </section>
 
       <section id="stats" class="view">

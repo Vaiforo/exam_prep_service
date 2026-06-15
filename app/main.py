@@ -34,13 +34,15 @@ from .services import (
     question_public,
     record_answer,
     reset_progress,
+    session_display_title,
     session_payload,
+    session_restart_payload,
 )
 
 APP_DIR = Path(__file__).resolve().parent
 QUESTIONS_PATH = APP_DIR / "app_data" / "questions.json"
 PATCH_NOTES_PATH = APP_DIR / "app_data" / "patch_notes.json"
-APP_VERSION = os.getenv("APP_VERSION", "46")
+APP_VERSION = os.getenv("APP_VERSION", "51")
 
 app = FastAPI(
     title="Numerical Methods Exam Prep",
@@ -222,10 +224,19 @@ def seed_current_patch_note() -> None:
     write_patch_notes(data)
 
 
+def patch_note_key(item: dict[str, Any], archived: bool = False) -> str:
+    base = str(item.get("id") or "site-update-current")
+    if archived:
+        return f"{base}:archive:{item.get('cleared_at') or item.get('created_at') or 'old'}"
+    return f"{base}:app-version:{APP_VERSION}"
+
+
 def patch_note_public(item: dict[str, Any], archived: bool = False) -> dict[str, Any]:
     return {
         "type": "patch",
-        "key": str(item.get("id", "")),
+        "key": patch_note_key(item, archived=archived),
+        "id": str(item.get("id", "")),
+        "app_version": APP_VERSION if not archived else None,
         "title": item.get("title") or "Сайт обновился",
         "message": "\n".join(item.get("changes", [])),
         "changes": item.get("changes", []),
@@ -424,7 +435,7 @@ def user_notifications(db: Session = Depends(get_db), user: User = Depends(get_c
     notes = read_patch_notes()
     items: list[dict[str, Any]] = []
     for item in notes.get("active", []):
-        key = str(item.get("id", ""))
+        key = patch_note_key(item, archived=False)
         if key and ("patch", key) not in dismissed and ("hidden_patch", key) not in hidden:
             items.append(patch_note_public(item, archived=False))
     notifications = db.query(AdminNotification).filter(AdminNotification.is_active.is_(True)).order_by(AdminNotification.created_at.desc()).limit(20).all()
@@ -467,8 +478,12 @@ def dismiss_notification(payload: NotificationDismissRequest, db: Session = Depe
 def clear_all_notifications(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     notes = read_patch_notes()
     pairs: list[tuple[str, str]] = []
-    for item in notes.get("active", []) + notes.get("archive", []):
-        key = str(item.get("id", ""))
+    for item in notes.get("active", []):
+        key = patch_note_key(item, archived=False)
+        if key:
+            pairs.append(("hidden_patch", key))
+    for item in notes.get("archive", []):
+        key = patch_note_key(item, archived=True)
         if key:
             pairs.append(("hidden_patch", key))
     for notification in db.query(AdminNotification).all():
@@ -975,6 +990,46 @@ def finish(session_id: int, db: Session = Depends(get_db), user: User = Depends(
         return finish_session(db, session_id, user=user)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+
+def result_summary_payload(session: TestSession) -> dict[str, Any]:
+    title = session_display_title(session)
+    accuracy = round((session.correct_count / session.total) * 100, 1) if session.total else 0
+    return {
+        "id": session.id,
+        "mode": session.mode,
+        "title": title,
+        "total": session.total,
+        "correct_count": session.correct_count,
+        "wrong_count": max(0, session.total - session.correct_count),
+        "accuracy": accuracy,
+        "started_at": session.started_at.isoformat(),
+        "finished_at": session.finished_at.isoformat() if session.finished_at else None,
+        "status": session.status,
+        "restart_payload": session_restart_payload(session),
+    }
+
+
+@app.get("/api/results")
+def results(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    rows = (
+        db.query(TestSession)
+        .options(selectinload(TestSession.items).selectinload(SessionQuestion.question).selectinload(Question.topic))
+        .filter(TestSession.user_id == user.id, TestSession.status == "finished")
+        .order_by(TestSession.finished_at.desc().nullslast(), TestSession.started_at.desc())
+        .limit(100)
+        .all()
+    )
+    return {"items": [result_summary_payload(session) for session in rows]}
+
+
+@app.get("/api/results/{session_id}")
+def result_details(session_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    session = db.get(TestSession, session_id)
+    if not session or session.user_id != user.id or session.status != "finished":
+        raise HTTPException(status_code=404, detail="Result not found")
+    return session_payload(db, session, reveal_answered=True)
 
 
 @app.get("/api/stats")

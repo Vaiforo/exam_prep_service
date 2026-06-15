@@ -83,7 +83,7 @@ async function init(){
 }
 
 function bindEvents(){
-  document.querySelectorAll('.nav').forEach(b => b.onclick = () => { show(b.dataset.view); if(b.dataset.view==='errors') loadErrors(); if(b.dataset.view==='stats') loadStats(); if(b.dataset.view==='flashcards') initFlashcards(); if(b.dataset.view==='theory') renderTheoryTopic(); if(b.dataset.view==='dashboard') refreshCustomFlowInfo(); });
+  document.querySelectorAll('.nav').forEach(b => b.onclick = () => { show(b.dataset.view); if(b.dataset.view==='errors') loadErrors(); if(b.dataset.view==='results') loadResults(); if(b.dataset.view==='stats') loadStats(); if(b.dataset.view==='flashcards') initFlashcards(); if(b.dataset.view==='theory') renderTheoryTopic(); if(b.dataset.view==='dashboard') refreshCustomFlowInfo(); });
   document.querySelectorAll('.mode').forEach(b => b.onclick = () => {
     const mode = b.dataset.mode;
     startTest({mode, count: mode === 'errors' ? 1000 : 20});
@@ -121,6 +121,8 @@ function bindEvents(){
   $('reportSubmit').onclick = submitReport;
   $('reportCancel').onclick = closeReportPanel;
   $('repeatErrorsTopBtn').onclick = () => startTest({mode:'errors', count:1000});
+  $('refreshResultsBtn').onclick = loadResults;
+  $('backToResultsBtn').onclick = () => { show('results'); loadResults(); };
 }
 
 async function checkAuth(){
@@ -219,7 +221,7 @@ async function loadTopics(){
       <h3>${t.external_id}. ${escapeHtml(t.title)}</h3>
       <p class="muted">Вопросов: ${t.questions_count}</p>
       <div class="topic-buttons">
-        <button onclick="startTest({mode:'topic', topic_id:${t.id}, count:20})">Тренировать тему</button>
+        <button onclick="startTest({mode:'topic', topic_id:${t.id}, count:${t.questions_count || 1500}})">Тренировать тему</button>
         <button class="secondary" onclick="openTheory(${t.id})">Открыть теорию</button>
       </div>
     </article>
@@ -418,7 +420,7 @@ function renderQuestion(){
     $('answerArea').innerHTML = `<div class="options">${q.choices.map(c => {
       const checked = q.user_answer && q.user_answer.selected_index === c.index ? 'checked' : '';
       return `
-      <label class="option"><input type="radio" name="answer" value="${c.index}" ${checked}><span class="option-index">${c.index+1}</span><div class="option-text">${c.text}</div></label>`;
+      <label class="option"><input type="radio" name="answer" value="${c.index}" ${checked}><div class="option-text">${c.text}</div></label>`;
     }).join('')}</div>`;
   } else {
     const previous = q.user_answer?.input_answer || '';
@@ -463,7 +465,6 @@ function renderFeedback(q, r){
     <h3>${r.is_correct ? 'Верно' : 'Ошибка'}</h3>
     <p><b>Правильный ответ:</b> ${r.correct_answer ?? '—'}</p>
     <p><b>Краткое объяснение:</b> ${r.explanation || '—'}</p>
-    <p><b>Почему этот вариант правильный:</b> ${r.explanation || 'Ответ соответствует формуле и условиям метода из темы.'}</p>
     <div class="theory-title-row compact">
       <h4>Краткая теория</h4>
       <button class="report-btn" onclick="openTheoryReport(${q.topic_id})">Пожаловаться на ошибку</button>
@@ -490,7 +491,110 @@ function prevQuestion(){
 
 function nextQuestion(){
   if(currentIndex < currentSession.questions.length - 1){ currentIndex++; renderQuestion(); }
-  else { api(`/api/sessions/${currentSession.id}/finish`, {method:'POST'}).then(s => { currentSession=s; toast(`Тест завершён: ${s.correct_count}/${s.total}`); show('stats'); loadStats(); updateReturnToTestButton('stats'); refreshCustomFlowInfo(); }); }
+  else { finishCurrentTest(); }
+}
+
+
+async function finishCurrentTest(){
+  const finished = await api(`/api/sessions/${currentSession.id}/finish`, {method:'POST'});
+  currentSession = finished;
+  toast(`Тест завершён: ${finished.correct_count}/${finished.total}`);
+  show('results');
+  await loadResults();
+  await openResult(finished.id);
+  updateReturnToTestButton('results');
+  refreshCustomFlowInfo();
+}
+
+async function loadResults(){
+  const data = await api('/api/results');
+  const rows = data.items || [];
+  $('resultsList').innerHTML = rows.map(renderResultCard).join('') || '<p class="muted">Завершённых тестов пока нет.</p>';
+
+}
+
+function renderResultCard(item){
+  const wrong = Math.max(0, item.total - item.correct_count);
+  return `<article class="notification-card result-card">
+    <div class="notification-top"><h3>${escapeHtml(item.title)}</h3><span class="badge">${item.correct_count}/${item.total}</span></div>
+    <div class="muted">Завершён: ${formatOmskDate(item.finished_at)} · начат: ${formatOmskDate(item.started_at)}</div>
+    <p><b>Верно:</b> ${item.correct_count}; <b>ошибок:</b> ${wrong}; <b>точность:</b> ${item.accuracy}%</p>
+    <div class="actions compact-actions">
+      <button class="secondary" onclick="openResult(${item.id})">Открыть результат</button>
+      <button onclick="retakeResult(${item.id})">Перепройти</button>
+    </div>
+  </article>`;
+}
+
+
+async function retakeResult(sessionId){
+  const session = await api(`/api/results/${sessionId}`);
+  const payload = session.restart_payload || {mode: session.mode, count: session.total, restart: true};
+  await startTest({...payload, restart: true});
+}
+
+async function openResult(sessionId){
+  const session = await api(`/api/results/${sessionId}`);
+  $('resultDetailContent').innerHTML = renderResultDetails(session);
+  show('resultDetail');
+  if(window.MathJax) MathJax.typesetPromise();
+  window.scrollTo({top: 0, behavior: 'smooth'});
+}
+
+function renderResultDetails(session){
+  const wrong = Math.max(0, session.total - session.correct_count);
+  const rows = (session.questions || []).map((item, idx) => renderResultQuestion(item.question, idx)).join('');
+  return `<h2>Результат теста</h2>
+    <p class="muted">${escapeHtml(session.title || labelMode(session))} · ${formatOmskDate(session.finished_at || session.started_at)}</p>
+    <div class="summary-grid">
+      <div class="metric"><strong>${session.correct_count}/${session.total}</strong><span>верно</span></div>
+      <div class="metric"><strong>${wrong}</strong><span>ошибок</span></div>
+      <div class="metric"><strong>${Math.round((session.correct_count / Math.max(1, session.total)) * 100)}%</strong><span>точность</span></div>
+    </div>
+    <div class="actions compact-actions">
+      <button onclick="retakeResult(${session.id})">Перепройти</button>
+    </div>
+    <h3>Ответы</h3>
+    <div class="result-answers">${rows}</div>`;
+}
+
+function renderResultQuestion(q, idx){
+  const answer = q.user_answer || {};
+  const hasAnswer = !!q.user_answer;
+  const isCorrect = hasAnswer && !!answer.is_correct;
+  const choices = q.kind === 'mcq'
+    ? `<div class="result-choices">${(q.choices || []).map(choice => {
+        const cls = choice.index === q.correct_choice_index ? 'correct-choice' : (choice.index === answer.selected_index ? 'wrong-choice' : '');
+        return `<div class="result-choice ${cls}">${choice.text}</div>`;
+      }).join('')}</div>`
+    : `<div class="result-choices">
+        <div class="result-choice ${hasAnswer ? 'wrong-choice' : ''}">${getAnswerText(q, answer)}</div>
+        <div class="result-choice correct-choice">${getCorrectAnswerText(q)}</div>
+      </div>`;
+  return `<article class="result-question ${isCorrect ? 'good' : 'bad'}">
+    <div class="muted">Вопрос ${idx + 1} · ${escapeHtml(q.topic_title || '')} · ${labelDifficulty(q.difficulty)}${hasAnswer ? '' : ' · пропущено'}</div>
+    <h4>${q.prompt}</h4>
+    ${choices}
+    <p><b>Пояснение:</b> ${escapeHtml(q.explanation || q.theory || '—')}</p>
+  </article>`;
+}
+
+function getAnswerText(q, answer = {}){
+  if(answer.answer_text) return escapeHtml(String(answer.answer_text));
+  if(q.kind === 'mcq'){
+    const choice = (q.choices || []).find(item => item.index === answer.selected_index);
+    return choice ? escapeHtml(choice.text) : '—';
+  }
+  if(answer.input_answer) return escapeHtml(answer.input_answer);
+  return '<span class="muted">Пропущено</span>';
+}
+
+function getCorrectAnswerText(q){
+  if(q.kind === 'mcq'){
+    const choice = (q.choices || []).find(item => item.index === q.correct_choice_index);
+    return escapeHtml(String(q.correct_answer || choice?.text || '—'));
+  }
+  return escapeHtml(String(q.correct_answer || '—'));
 }
 
 function hasActiveCurrentTest(){

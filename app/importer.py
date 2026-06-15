@@ -60,6 +60,81 @@ def migrate_question_metadata(db: Session, exam: Exam, payload: dict[str, Any] |
     db.commit()
 
 
+
+
+def sync_question_bank(db: Session, exam: Exam, payload: dict[str, Any]) -> dict[str, int]:
+    """Synchronize bundled JSON with an already-created database.
+
+    This keeps user progress and existing question IDs when possible, but adds
+    missing topics/questions and refreshes question metadata/choices.
+    """
+    topic_map: dict[int, Topic] = {topic.external_id: topic for topic in db.query(Topic).filter(Topic.exam_id == exam.id).all()}
+    added_topics = 0
+    for item in payload.get("topics", []):
+        external_id = int(item["external_id"])
+        topic = topic_map.get(external_id)
+        if topic is None:
+            topic = Topic(
+                exam_id=exam.id,
+                external_id=external_id,
+                title=item.get("title", ""),
+                theory=item.get("theory", ""),
+                simple_theory=item.get("simple_theory", ""),
+            )
+            db.add(topic)
+            db.flush()
+            topic_map[external_id] = topic
+            added_topics += 1
+        else:
+            topic.title = item.get("title", topic.title)
+            topic.theory = item.get("theory", topic.theory)
+            if item.get("simple_theory"):
+                topic.simple_theory = item.get("simple_theory", topic.simple_theory)
+
+    existing_questions: dict[str, Question] = {
+        question.external_id: question
+        for question in db.query(Question).filter(Question.exam_id == exam.id).all()
+    }
+    added_questions = 0
+    updated_questions = 0
+    all_questions = list(payload.get("questions", [])) + list(payload.get("official_sample", []))
+    for item in all_questions:
+        topic = topic_map.get(int(item["topic_external_id"]))
+        if topic is None:
+            continue
+        question = existing_questions.get(item["external_id"])
+        if question is None:
+            question = Question(exam_id=exam.id, external_id=item["external_id"])
+            db.add(question)
+            existing_questions[question.external_id] = question
+            added_questions += 1
+        else:
+            db.query(Choice).filter(Choice.question_id == question.id).delete(synchronize_session=False)
+            updated_questions += 1
+
+        question.topic_id = topic.id
+        question.prompt = item.get("prompt", "")
+        question.kind = item.get("kind", "mcq")
+        question.explanation = item.get("explanation", "")
+        question.theory = item.get("theory") or topic.theory
+        question.simple_theory = item.get("simple_theory") or topic.simple_theory
+        question.source = item.get("source") or "theory"
+        question.difficulty = item.get("difficulty") or "easy"
+        question.correct_choice_index = item.get("correct_choice_index")
+        question.answer_text = item.get("answer_text")
+        question.answer_value = item.get("answer_value")
+        question.tolerance = item.get("tolerance")
+        question.aliases_json = item.get("aliases") or []
+        question.raw_json = item.get("raw") or item
+        question.is_active = True
+        db.flush()
+        for idx, text in enumerate(item.get("choices") or []):
+            db.add(Choice(question_id=question.id, position=idx, text=text, is_correct=(idx == item.get("correct_choice_index"))))
+
+    db.commit()
+    return {"topics_added": added_topics, "questions_added": added_questions, "questions_updated": updated_questions}
+
+
 def seed_questions_from_json(db: Session, json_path: str | Path, force: bool = False) -> dict[str, Any]:
     path = Path(json_path)
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -71,7 +146,9 @@ def seed_questions_from_json(db: Session, json_path: str | Path, force: bool = F
         if existing > 0:
             ensure_default_user(db)
             migrate_question_metadata(db, exam, payload)
-            return {"status": "skipped", "questions": existing, "reason": "database already seeded"}
+            sync_result = sync_question_bank(db, exam, payload)
+            refreshed = db.query(Question).filter(Question.exam_id == exam.id).count()
+            return {"status": "synced", "questions": refreshed, "previous_questions": existing, **sync_result}
 
     if exam is None:
         exam = Exam(slug=exam_data["slug"], title=exam_data["title"], description=exam_data.get("description", ""))
