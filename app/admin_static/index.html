@@ -37,6 +37,7 @@
         <button class="admin-tab" data-tab="reports">Жалобы на ошибки</button>
         <button class="admin-tab" data-tab="metrics">Метрики</button>
         <button class="admin-tab" data-tab="notifications">Уведомления</button>
+        <button class="admin-tab" data-tab="chat">Чат</button>
         <span id="adminInfo" class="muted admin-info"></span>
       </nav>
 
@@ -108,6 +109,30 @@
             </div>
           </div>
           <div id="adminNotificationsList" class="notifications-list"></div>
+        </section>
+      </section>
+
+
+      <section id="chatTab" class="admin-tab-panel hidden">
+        <section class="panel admin-chat-panel">
+          <div class="reports-head">
+            <div>
+              <h2>Чат</h2>
+              <p class="muted">Просмотр общего чата и личных переписок. Сообщения можно удалять вместе с медиафайлами.</p>
+            </div>
+            <button id="refreshAdminChatBtn" class="secondary" type="button">Обновить чат</button>
+          </div>
+          <div class="admin-chat-grid">
+            <aside class="admin-chat-list" id="adminChatConversations"></aside>
+            <section class="admin-chat-messages">
+              <div class="admin-chat-messages-head">
+                <h3 id="adminChatTitle">Выберите чат</h3>
+                <span id="adminChatCount" class="muted"></span>
+              </div>
+              <div id="adminChatRoomMembers" class="admin-chat-members hidden"></div>
+              <div id="adminChatMessages" class="admin-chat-message-list muted">Выберите чат слева.</div>
+            </section>
+          </div>
         </section>
       </section>
 

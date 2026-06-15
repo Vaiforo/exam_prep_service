@@ -3,15 +3,21 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import mimetypes
 import os
+import re
 import secrets
 import time
+import uuid
+import zipfile
+from html import escape as html_escape
+from xml.etree import ElementTree as ET
 from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,7 +27,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .database import Base, SessionLocal, engine, get_db
 from .importer import seed_questions_from_json
-from .models import AdminNotification, AuthToken, Choice, ErrorReport, Exam, NotificationDismissal, Question, SessionQuestion, TestAnswer, TestSession, Topic, User
+from .models import AdminNotification, AuthToken, ChatDialogHidden, ChatMessage, ChatReadState, ChatRoom, ChatRoomMember, Choice, ErrorReport, Exam, NotificationDismissal, Question, SessionQuestion, TestAnswer, TestSession, Topic, User
 from .services import (
     answer_payload,
     build_stats,
@@ -42,7 +48,10 @@ from .services import (
 APP_DIR = Path(__file__).resolve().parent
 QUESTIONS_PATH = APP_DIR / "app_data" / "questions.json"
 PATCH_NOTES_PATH = APP_DIR / "app_data" / "patch_notes.json"
-APP_VERSION = os.getenv("APP_VERSION", "51")
+APP_VERSION = os.getenv("APP_VERSION", "73")
+CHAT_MEDIA_DIR = Path(os.getenv("CHAT_MEDIA_DIR", str(APP_DIR.parent / "runtime" / "chat_media")))
+CHAT_MAX_UPLOAD_MB = int(os.getenv("CHAT_MAX_UPLOAD_MB", "25"))
+CHAT_MAX_UPLOAD_BYTES = CHAT_MAX_UPLOAD_MB * 1024 * 1024
 
 app = FastAPI(
     title="Numerical Methods Exam Prep",
@@ -56,7 +65,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins or ["*"],
     allow_credentials=False,
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -188,6 +197,31 @@ class AdminPatchNotesUpdateRequest(BaseModel):
     changes: list[str] = Field(default_factory=list, max_length=100)
 
 
+class ChatMessageUpdateRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=5000)
+
+
+class ChatReadRequest(BaseModel):
+    chat_type: str = Field(default="group", pattern="^(saved|group|direct|room)$")
+    peer: Optional[str] = Field(default=None, max_length=80)
+    room_id: Optional[int] = Field(default=None, ge=1)
+    last_message_id: int = Field(default=0, ge=0)
+
+
+
+
+class ChatRoomCreateRequest(BaseModel):
+    title: str = Field(min_length=2, max_length=160)
+    usernames: list[str] = Field(default_factory=list, max_length=50)
+
+
+class ChatForwardRequest(BaseModel):
+    chat_type: str = Field(default="group", pattern="^(saved|group|direct|room)$")
+    peer: Optional[str] = Field(default=None, max_length=80)
+    room_id: Optional[int] = Field(default=None, ge=1)
+    text: str = Field(default="", max_length=5000)
+
+
 
 
 def read_patch_notes() -> dict[str, Any]:
@@ -214,11 +248,61 @@ def seed_current_patch_note() -> None:
         "title": "Сайт обновился",
         "created_at": datetime.utcnow().isoformat(),
         "changes": [
-            "Появилась отдельная страница уведомлений и патч-ноутов.",
-            "При входе на сайт показывается окно «Сайт обновился» со списком изменений.",
-            "Уведомления можно очистить у себя в аккаунте.",
-            "Уведомления теперь появляются у открытого пользователя автоматически, без перезагрузки страницы.",
-            "Если доступно несколько уведомлений или патч-ноутов, они показываются по очереди.",
+            "Добавлены жалобы на ошибки в вопросах и теории.",
+            "Теория получила режимы «Простая» и «Стандартная».",
+            "Улучшены конструктор потока, повторение ошибок и быстрый возврат к активному тесту.",
+            "Добавлены уведомления, патч-ноуты и отдельная страница для их просмотра.",
+            "Добавлена страница «Результаты» с завершёнными тестами, подробным разбором и кнопкой «Перепройти».",
+            "Улучшено прохождение тестов: перемешивание вариантов, отсутствие номеров ответов, корректная обработка пропущенных вопросов.",
+            "Исправлены отображение ошибок, результаты тестов, омское время и внешний вид тёмной темы.",
+            "Добавлена отдельная страница чата.",
+            "Появился общий чат между пользователями и личные сообщения по логину.",
+            "В чат можно отправлять текст, изображения из буфера обмена, txt, md, ipynb и docx-файлы.",
+            "Файлы txt, md, ipynb и docx можно открывать онлайн прямо из чата.",
+            "У изображений в чате появилась отдельная кнопка скачивания.",
+            "Личные переписки теперь сохраняются в списке диалогов.",
+            "Интерфейс чата стал удобнее и ближе к привычному мессенджеру.",
+            "В чат добавлена отправка файлов перетаскиванием.",
+            "В чате появилась поддержка PDF с онлайн-просмотром.",
+            "Файл перед отправкой теперь сначала прикрепляется к сообщению.",
+            "Свои сообщения можно редактировать и удалять в течение суток.",
+            "На кнопке чата теперь показывается количество непрочитанных сообщений.",
+            "В сообщениях появились индикаторы прочтения.",
+            "У сообщений появилось меню через три точки.",
+            "На любое сообщение можно ответить или переслать его в другой чат.",
+            "При пересылке сообщения теперь открывается окно выбора чата из списка диалогов.",
+            "Открытие и прочтение чата больше не перезагружает страницу чата у других пользователей.",
+            "Удалённые сообщения теперь исчезают из чата без заглушки.",
+            "Редактирование сообщений теперь выполняется через обычную строку ввода сообщения.",
+            "Поле ввода в чате стало короче и аккуратнее.",
+            "При перетаскивании файла в чат появляется заметная область прикрепления.",
+            "В поле ЛС появились подсказки пользователей по логину.",
+            "В чате можно создавать групповые чаты и добавлять участников из диалогов или по логину.",
+                "Интерфейс чата аккуратнее адаптирован под телефон.",
+            "Окно создания группового чата стало удобнее и красивее.",
+            "В чате появилось «Избранное» — личный чат с самим собой для заметок и файлов.",
+            "Мобильный интерфейс чата переработан: диалоги и название открытого чата стали заметнее.",
+            "Пользователь становится оффлайн, если не был активен больше одной минуты.",
+            "В личных чатах теперь видно, когда оффлайн-собеседник был онлайн в последний раз.",
+            "Список диалогов в чате стал аккуратнее и удобнее прокручивается при большом количестве чатов.",
+            "В карточке диалога появилось меню с действиями: удалить ЛС из списка или выйти из группы.",
+            "Список диалогов и область переписки теперь прокручиваются независимо друг от друга.",
+            "Строка ввода сообщения больше не уезжает вниз при большом количестве диалогов.",
+            "На телефоне лента диалогов в чате стала фиксированно видимой и не схлопывается.",
+            "Неподдерживаемые файлы теперь нельзя прикрепить к сообщению.",
+            "В меню группового чата можно посмотреть список участников.",
+            "Карточки диалогов стали компактнее и ближе к обычному списку чатов.",
+            "Карточки диалогов получили аккуратную окантовку и мягкий фон.",
+            "При открытии чата переписка автоматически прокручивается к последнему сообщению.",
+            "На телефоне блок диалогов стал выше и отделён от области переписки.",
+            "Карточки диалогов стали ниже и компактнее.",
+            "Ширина карточек диалогов восстановлена, уменьшена только их высота.",
+            "Карточки диалогов выровнены по ширине с кнопкой создания группы, при этом уменьшена только их высота.",
+            "На ПК карточки диалогов стали крупнее, а на телефоне сохранён компактный размер.",
+            "В списке диалогов уменьшены промежутки между чатами и убран лишний внутренний отступ справа.",
+            "Карточки в списке диалогов стали ниже и компактнее.",
+            "Список диалогов стал стабильнее: высота карточек восстановлена, а отступы сделаны внутри карточек.",
+            "Статус онлайн в чате теперь показывается зелёным кружком на аватарке пользователя.",
         ],
     }]
     write_patch_notes(data)
@@ -318,6 +402,26 @@ def migrate_simple_theory_columns() -> None:
             connection.exec_driver_sql("ALTER TABLE questions ADD COLUMN simple_theory TEXT DEFAULT ''")
 
 
+def migrate_chat_message_columns() -> None:
+    if engine.url.get_backend_name() != "sqlite":
+        return
+    with engine.begin() as connection:
+        tables = {row[0] for row in connection.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "chat_messages" not in tables:
+            return
+        columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(chat_messages)").fetchall()}
+        if "edited_at" not in columns:
+            connection.exec_driver_sql("ALTER TABLE chat_messages ADD COLUMN edited_at DATETIME")
+        if "deleted_at" not in columns:
+            connection.exec_driver_sql("ALTER TABLE chat_messages ADD COLUMN deleted_at DATETIME")
+        if "room_id" not in columns:
+            connection.exec_driver_sql("ALTER TABLE chat_messages ADD COLUMN room_id INTEGER")
+        if "chat_read_states" in tables:
+            read_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(chat_read_states)").fetchall()}
+            if "room_id" not in read_columns:
+                connection.exec_driver_sql("ALTER TABLE chat_read_states ADD COLUMN room_id INTEGER")
+
+
 def create_auth_token(db: Session, user: User) -> str:
     token = secrets.token_urlsafe(48)
     user.last_seen_at = datetime.utcnow()
@@ -336,20 +440,367 @@ def get_current_user(authorization: Optional[str] = Header(default=None), db: Se
     user = db.get(User, auth.user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="Invalid user")
-    user.last_seen_at = datetime.utcnow()
-    db.commit()
-    db.refresh(user)
     return user
 
+
+
+def get_user_by_token(db: Session, token: str | None) -> User | None:
+    if not token:
+        return None
+    auth = db.scalar(select(AuthToken).where(AuthToken.token == token.strip()))
+    if auth is None:
+        return None
+    user = db.get(User, auth.user_id)
+    if user is not None:
+        user.last_seen_at = datetime.utcnow()
+        db.commit()
+        db.refresh(user)
+    return user
+
+
+def get_current_user_from_optional_token(
+    authorization: Optional[str] = Header(default=None),
+    token: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+) -> User:
+    raw_token = token
+    if not raw_token and authorization and authorization.lower().startswith("bearer "):
+        raw_token = authorization.split(" ", 1)[1].strip()
+    user = get_user_by_token(db, raw_token)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Auth required")
+    return user
+
+
+class ChatConnectionManager:
+    def __init__(self) -> None:
+        self.active: dict[int, set[WebSocket]] = {}
+
+    async def connect(self, user_id: int, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self.active.setdefault(user_id, set()).add(websocket)
+
+    def disconnect(self, user_id: int, websocket: WebSocket) -> None:
+        sockets = self.active.get(user_id)
+        if not sockets:
+            return
+        sockets.discard(websocket)
+        if not sockets:
+            self.active.pop(user_id, None)
+
+    async def send_to_user(self, user_id: int, payload: dict[str, Any]) -> None:
+        sockets = list(self.active.get(user_id, set()))
+        for socket in sockets:
+            try:
+                await socket.send_json(payload)
+            except Exception:
+                self.disconnect(user_id, socket)
+
+    async def broadcast_group(self, payload: dict[str, Any]) -> None:
+        for user_id in list(self.active.keys()):
+            await self.send_to_user(user_id, payload)
+
+
+CHAT_MANAGER = ChatConnectionManager()
+
+
+def normalize_chat_type(value: str | None) -> str:
+    if value == "saved":
+        return "saved"
+    if value == "direct":
+        return "direct"
+    if value == "room":
+        return "room"
+    return "group"
+
+
+def get_room_member(db: Session, user: User, room_id: int | None) -> ChatRoomMember | None:
+    if not room_id:
+        return None
+    return db.scalar(select(ChatRoomMember).where(ChatRoomMember.room_id == room_id, ChatRoomMember.user_id == user.id))
+
+def require_chat_room_member(db: Session, user: User, room_id: int | None) -> ChatRoom:
+    if not room_id:
+        raise HTTPException(status_code=400, detail="Укажи групповой чат")
+    room = db.get(ChatRoom, room_id)
+    if room is None or get_room_member(db, user, room_id) is None:
+        raise HTTPException(status_code=404, detail="Групповой чат не найден")
+    return room
+
+
+def can_user_see_chat_message(user: User, message: ChatMessage, db: Session | None = None) -> bool:
+    if message.chat_type == "saved":
+        return message.sender_id == user.id
+    if message.chat_type == "group":
+        return True
+    if message.chat_type == "direct":
+        return message.sender_id == user.id or message.recipient_id == user.id
+    if message.chat_type == "room" and db is not None:
+        return get_room_member(db, user, message.room_id) is not None
+    return False
+
+
+def can_modify_chat_message(user: User, message: ChatMessage) -> bool:
+    if message.sender_id != user.id or message.deleted_at is not None:
+        return False
+    return datetime.utcnow() - message.created_at <= timedelta(hours=24)
+
+
+def attachment_kind_for(filename: str, content_type: str | None) -> tuple[str, str]:
+    name = filename.lower().strip()
+    mime = (content_type or "").split(";", 1)[0].strip().lower()
+    suffix = Path(name).suffix.lower()
+    if mime.startswith("image/") or suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+        if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+            suffix = ".png"
+        if not mime or mime == "application/octet-stream":
+            mime = mimetypes.types_map.get(suffix, "image/png")
+        return "image", mime
+    if suffix == ".txt" or mime == "text/plain":
+        return "text", "text/plain"
+    if suffix == ".md" or mime in {"text/markdown", "text/x-markdown"}:
+        return "markdown", "text/markdown"
+    if suffix == ".ipynb" or mime in {"application/x-ipynb+json", "application/json"}:
+        return "notebook", "application/x-ipynb+json"
+    if suffix == ".docx" or mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        return "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if suffix == ".pdf" or mime == "application/pdf":
+        return "pdf", "application/pdf"
+    raise HTTPException(status_code=400, detail="Можно отправлять только изображения, pdf, txt, md, ipynb и docx")
+
+
+def safe_file_extension(kind: str, filename: str, mime: str) -> str:
+    suffix = Path(filename.lower()).suffix
+    if kind == "image" and suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+        return suffix
+    if kind == "text":
+        return ".txt"
+    if kind == "markdown":
+        return ".md"
+    if kind == "notebook":
+        return ".ipynb"
+    if kind == "docx":
+        return ".docx"
+    if kind == "pdf":
+        return ".pdf"
+    return mimetypes.guess_extension(mime) or ".bin"
+
+
+
+
+def remove_chat_media_if_unused(db: Session, message: ChatMessage) -> bool:
+    storage_path = message.attachment_storage_path
+    if not storage_path:
+        return False
+    other_refs = db.query(ChatMessage.id).filter(
+        ChatMessage.id != message.id,
+        ChatMessage.deleted_at.is_(None),
+        ChatMessage.attachment_storage_path == storage_path,
+    ).first()
+    if other_refs:
+        return False
+    path = (CHAT_MEDIA_DIR / storage_path).resolve()
+    root = CHAT_MEDIA_DIR.resolve()
+    if root in path.parents and path.exists():
+        try:
+            path.unlink()
+            return True
+        except OSError:
+            return False
+    return False
+
+def admin_chat_message_public(message: ChatMessage) -> dict[str, Any]:
+    attachment = chat_attachment_public(message) if message.deleted_at is None else None
+    return {
+        "id": message.id,
+        "chat_type": message.chat_type,
+        "text": message.text or "",
+        "created_at": message.created_at.isoformat(),
+        "edited_at": message.edited_at.isoformat() if message.edited_at else None,
+        "sender": {"id": message.sender.id, "username": message.sender.username} if message.sender else {"id": message.sender_id, "username": "user"},
+        "recipient": {"id": message.recipient.id, "username": message.recipient.username} if message.recipient else None,
+        "attachment": attachment,
+    }
+
+def admin_chat_conversation_title(kind: str, left: User | None = None, right: User | None = None) -> str:
+    if kind == "group":
+        return "Общий чат"
+    return f"ЛС: {left.username if left else '?'} ↔ {right.username if right else '?'}"
+
+def admin_chat_conversation_key(kind: str, left_id: int | None = None, right_id: int | None = None) -> str:
+    if kind == "group":
+        return "group"
+    a, b = sorted([int(left_id or 0), int(right_id or 0)])
+    return f"direct:{a}:{b}"
+
+def chat_attachment_public(message: ChatMessage) -> dict[str, Any] | None:
+    if not message.attachment_storage_path:
+        return None
+    return {
+        "url": f"/api/chat/attachments/{message.id}",
+        "preview_url": f"/api/chat/attachments/{message.id}/preview",
+        "original_name": message.attachment_original_name or "file",
+        "mime_type": message.attachment_mime_type or "application/octet-stream",
+        "size": message.attachment_size or 0,
+        "kind": message.attachment_kind or "file",
+    }
+
+
+def chat_message_public(message: ChatMessage, current_user: User | None = None) -> dict[str, Any]:
+    deleted = message.deleted_at is not None
+    can_modify = bool(current_user and can_modify_chat_message(current_user, message))
+    return {
+        "id": message.id,
+        "chat_type": message.chat_type,
+        "text": "" if deleted else (message.text or ""),
+        "created_at": message.created_at.isoformat(),
+        "edited_at": message.edited_at.isoformat() if message.edited_at else None,
+        "deleted_at": message.deleted_at.isoformat() if message.deleted_at else None,
+        "is_deleted": deleted,
+        "can_edit": bool(can_modify and not message.attachment_storage_path),
+        "can_delete": can_modify,
+        "read_info": getattr(message, "_read_info", None),
+        "sender": {"id": message.sender.id, "username": message.sender.username} if message.sender else {"id": message.sender_id, "username": "user"},
+        "recipient": {"id": message.recipient.id, "username": message.recipient.username} if message.recipient else None,
+        "room": {"id": message.room.id, "title": message.room.title} if getattr(message, "room", None) else None,
+        "room_id": message.room_id,
+        "is_own": bool(current_user and message.sender_id == current_user.id),
+        "attachment": None if deleted else chat_attachment_public(message),
+    }
+
+
+def resolve_direct_recipient(db: Session, sender: User, username: str | None) -> User:
+    peer_username = normalize_username(username or "")
+    if not peer_username:
+        raise HTTPException(status_code=400, detail="Укажи логин собеседника")
+    peer = db.scalar(select(User).where(User.username == peer_username))
+    if peer is None:
+        raise HTTPException(status_code=404, detail="Пользователь с таким логином не найден")
+    if peer.id == sender.id:
+        raise HTTPException(status_code=400, detail="Нельзя открыть ЛС с самим собой")
+    return peer
+
+
+async def broadcast_chat_event(db: Session, message: ChatMessage, event_type: str = "message") -> None:
+    db.refresh(message)
+    payload = {"type": event_type, "message": chat_message_public(message)}
+    if message.chat_type == "saved":
+        await CHAT_MANAGER.send_to_user(message.sender_id, payload)
+        return
+    if message.chat_type == "group":
+        await CHAT_MANAGER.broadcast_group(payload)
+        return
+    if message.chat_type == "room" and message.room_id:
+        user_ids = {row[0] for row in db.query(ChatRoomMember.user_id).filter(ChatRoomMember.room_id == message.room_id).all()}
+    else:
+        user_ids = {message.sender_id}
+        if message.recipient_id:
+            user_ids.add(message.recipient_id)
+    for user_id in user_ids:
+        await CHAT_MANAGER.send_to_user(user_id, payload)
+
+
+async def broadcast_chat_message(db: Session, message: ChatMessage) -> None:
+    await broadcast_chat_event(db, message, "message")
+
+
+def read_text_attachment(path: Path, max_chars: int = 200_000) -> str:
+    data = path.read_bytes()
+    for encoding in ("utf-8", "utf-8-sig", "cp1251"):
+        try:
+            return data.decode(encoding)[:max_chars]
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")[:max_chars]
+
+
+def markdown_to_safe_html(text: str) -> str:
+    safe = html_escape(text)
+    safe = re.sub(r"^###\s+(.+)$", r"<h3>\1</h3>", safe, flags=re.MULTILINE)
+    safe = re.sub(r"^##\s+(.+)$", r"<h2>\1</h2>", safe, flags=re.MULTILINE)
+    safe = re.sub(r"^#\s+(.+)$", r"<h1>\1</h1>", safe, flags=re.MULTILINE)
+    safe = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", safe)
+    safe = re.sub(r"`([^`]+)`", r"<code>\1</code>", safe)
+    lines = safe.splitlines()
+    output = []
+    in_list = False
+    for line in lines:
+        m = re.match(r"^[-*]\s+(.+)$", line)
+        if m:
+            if not in_list:
+                output.append("<ul>")
+                in_list = True
+            output.append(f"<li>{m.group(1)}</li>")
+            continue
+        if in_list:
+            output.append("</ul>")
+            in_list = False
+        if line.startswith("<h") or not line.strip():
+            output.append(line or "")
+        else:
+            output.append(f"<p>{line}</p>")
+    if in_list:
+        output.append("</ul>")
+    return "\n".join(output)
+
+
+def notebook_to_safe_html(text: str) -> str:
+    try:
+        nb = json.loads(text)
+    except Exception:
+        return f"<pre>{html_escape(text)}</pre>"
+    cells = nb.get("cells", []) if isinstance(nb, dict) else []
+    html = ["<div class='chat-preview-notebook'>"]
+    for idx, cell in enumerate(cells[:80], start=1):
+        cell_type = cell.get("cell_type", "cell") if isinstance(cell, dict) else "cell"
+        source = cell.get("source", "") if isinstance(cell, dict) else ""
+        if isinstance(source, list):
+            source = "".join(source)
+        source = str(source)
+        html.append(f"<section class='notebook-cell notebook-{html_escape(cell_type)}'><div class='notebook-label'>Ячейка {idx} · {html_escape(cell_type)}</div>")
+        if cell_type == "markdown":
+            html.append(markdown_to_safe_html(source))
+        else:
+            html.append(f"<pre><code>{html_escape(source)}</code></pre>")
+        html.append("</section>")
+    if len(cells) > 80:
+        html.append(f"<p class='muted'>Показаны первые 80 ячеек из {len(cells)}.</p>")
+    html.append("</div>")
+    return "\n".join(html)
+
+
+def docx_to_safe_html(path: Path) -> str:
+    try:
+        with zipfile.ZipFile(path) as docx:
+            xml = docx.read("word/document.xml")
+        root = ET.fromstring(xml)
+        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        paragraphs = []
+        for para in root.findall(".//w:body/w:p", ns):
+            parts = []
+            for node in para.findall(".//w:t", ns):
+                parts.append(node.text or "")
+            text = "".join(parts).strip()
+            if text:
+                paragraphs.append(f"<p>{html_escape(text)}</p>")
+        if not paragraphs:
+            return "<p class='muted'>В документе не найден текст для предпросмотра.</p>"
+        return "<div class='chat-preview-docx'>" + "\n".join(paragraphs[:300]) + "</div>"
+    except Exception as exc:
+        return f"<p class='muted'>Не удалось открыть DOCX онлайн: {html_escape(str(exc))}</p>"
 
 def admin_credentials_configured() -> bool:
     return bool(os.getenv("ADMIN_USERNAME") and os.getenv("ADMIN_PASSWORD"))
 
 
-def get_admin_user(authorization: Optional[str] = Header(default=None)) -> str:
-    if not authorization or not authorization.lower().startswith("bearer "):
+def get_admin_user(authorization: Optional[str] = Header(default=None), admin_token: Optional[str] = Query(default=None)) -> str:
+    token = ""
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+    elif admin_token:
+        token = admin_token.strip()
+    if not token:
         raise HTTPException(status_code=401, detail="Admin auth required")
-    token = authorization.split(" ", 1)[1].strip()
     if token not in ADMIN_TOKENS:
         raise HTTPException(status_code=401, detail="Invalid admin token")
     return "admin"
@@ -357,7 +808,7 @@ def get_admin_user(authorization: Optional[str] = Header(default=None)) -> str:
 
 def user_summary(db: Session, user: User) -> dict[str, Any]:
     stats = build_stats(db, user)
-    online_timeout = int(os.getenv("ONLINE_TIMEOUT_SECONDS", "300"))
+    online_timeout = int(os.getenv("ONLINE_TIMEOUT_SECONDS", "60"))
     is_online = bool(user.last_seen_at and datetime.utcnow() - user.last_seen_at <= timedelta(seconds=online_timeout))
     return {
         "id": user.id,
@@ -405,10 +856,12 @@ def report_summary(report: ErrorReport) -> dict[str, Any]:
 
 @app.on_event("startup")
 def startup() -> None:
+    CHAT_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
     seed_current_patch_note()
     migrate_auth_columns()
     migrate_simple_theory_columns()
+    migrate_chat_message_columns()
     db = SessionLocal()
     try:
         seed_questions_from_json(db, QUESTIONS_PATH, force=False)
@@ -501,6 +954,634 @@ def clear_all_notifications(db: Session = Depends(get_db), user: User = Depends(
     db.commit()
     return {"status": "cleared", "hidden": created}
 
+
+
+
+def chat_preview_text(message: ChatMessage | None) -> str:
+    if message is None:
+        return "Сообщений пока нет"
+    text = (message.text or "").strip()
+    if text:
+        return text[:120]
+    if message.attachment_original_name:
+        return f"📎 {message.attachment_original_name}"
+    return "Сообщение"
+
+
+
+def chat_scope_peer_id(user: User, chat_type: str, peer: User | None = None) -> int | None:
+    return peer.id if chat_type == "direct" and peer is not None else None
+
+def chat_scope_room_id(chat_type: str, room: ChatRoom | None = None, room_id: int | None = None) -> int | None:
+    if chat_type != "room":
+        return None
+    return room.id if room is not None else room_id
+
+def get_chat_read_state(db: Session, user: User, chat_type: str, peer: User | None = None, room: ChatRoom | None = None, room_id: int | None = None) -> ChatReadState | None:
+    return db.scalar(select(ChatReadState).where(
+        ChatReadState.user_id == user.id,
+        ChatReadState.chat_type == chat_type,
+        ChatReadState.peer_user_id == chat_scope_peer_id(user, chat_type, peer),
+        ChatReadState.room_id == chat_scope_room_id(chat_type, room, room_id),
+    ))
+
+def set_chat_read_state(db: Session, user: User, chat_type: str, peer: User | None, last_message_id: int, room: ChatRoom | None = None) -> ChatReadState:
+    state = get_chat_read_state(db, user, chat_type, peer, room=room)
+    if state is None:
+        state = ChatReadState(user_id=user.id, chat_type=chat_type, peer_user_id=chat_scope_peer_id(user, chat_type, peer), room_id=chat_scope_room_id(chat_type, room), last_read_message_id=0)
+        db.add(state)
+    state.last_read_message_id = max(int(state.last_read_message_id or 0), int(last_message_id or 0))
+    state.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(state)
+    return state
+
+def apply_message_read_info(db: Session, current_user: User, messages: list[ChatMessage]) -> None:
+    for message in messages:
+        read_info: dict[str, Any] | None = None
+        if message.sender_id == current_user.id and message.deleted_at is None:
+            if message.chat_type == "direct" and message.recipient_id:
+                state = db.scalar(select(ChatReadState).where(
+                    ChatReadState.user_id == message.recipient_id,
+                    ChatReadState.chat_type == "direct",
+                    ChatReadState.peer_user_id == current_user.id,
+                    ChatReadState.room_id.is_(None),
+                ))
+                read_info = {"kind": "direct", "read": bool(state and state.last_read_message_id >= message.id)}
+            elif message.chat_type == "group":
+                count = db.query(ChatReadState).filter(
+                    ChatReadState.chat_type == "group",
+                    ChatReadState.room_id.is_(None),
+                    ChatReadState.user_id != current_user.id,
+                    ChatReadState.last_read_message_id >= message.id,
+                ).count()
+                read_info = {"kind": "group", "read_count": count}
+            elif message.chat_type == "room" and message.room_id:
+                count = db.query(ChatReadState).filter(
+                    ChatReadState.chat_type == "room",
+                    ChatReadState.room_id == message.room_id,
+                    ChatReadState.user_id != current_user.id,
+                    ChatReadState.last_read_message_id >= message.id,
+                ).count()
+                read_info = {"kind": "group", "read_count": count}
+        setattr(message, "_read_info", read_info)
+
+
+def chat_message_public_for_user(db: Session, message: ChatMessage, current_user: User) -> dict[str, Any]:
+    apply_message_read_info(db, current_user, [message])
+    return chat_message_public(message, current_user=current_user)
+
+
+def unread_count_for_scope(db: Session, user: User, chat_type: str, peer: User | None = None, room: ChatRoom | None = None) -> int:
+    if chat_type == "saved":
+        return 0
+    state = get_chat_read_state(db, user, chat_type, peer, room=room)
+    last_id = int(state.last_read_message_id or 0) if state else 0
+    query = db.query(ChatMessage).filter(ChatMessage.id > last_id, ChatMessage.sender_id != user.id, ChatMessage.deleted_at.is_(None))
+    if chat_type == "group":
+        query = query.filter(ChatMessage.chat_type == "group")
+    elif chat_type == "direct":
+        if peer is None:
+            return 0
+        query = query.filter(
+            ChatMessage.chat_type == "direct",
+            (((ChatMessage.sender_id == user.id) & (ChatMessage.recipient_id == peer.id)) | ((ChatMessage.sender_id == peer.id) & (ChatMessage.recipient_id == user.id))),
+        )
+    elif chat_type == "room":
+        if room is None:
+            return 0
+        query = query.filter(ChatMessage.chat_type == "room", ChatMessage.room_id == room.id)
+    return query.count()
+
+def chat_conversation_public(kind: str, title: str, last_message: ChatMessage | None, peer: User | None = None, unread_count: int = 0, room: ChatRoom | None = None) -> dict[str, Any]:
+    online_timeout = int(os.getenv("ONLINE_TIMEOUT_SECONDS", "60"))
+    is_online = bool(peer and peer.last_seen_at and datetime.utcnow() - peer.last_seen_at <= timedelta(seconds=online_timeout))
+    return {
+        "type": kind,
+        "peer": peer.username if peer else None,
+        "room_id": room.id if room else None,
+        "title": title,
+        "updated_at": last_message.created_at.isoformat() if last_message else None,
+        "last_message": chat_preview_text(last_message),
+        "last_sender": last_message.sender.username if last_message and last_message.sender else None,
+        "has_attachment": bool(last_message and last_message.attachment_storage_path and last_message.deleted_at is None),
+        "unread_count": unread_count,
+        "is_online": is_online,
+        "last_seen_at": peer.last_seen_at.isoformat() if peer and peer.last_seen_at else None,
+    }
+
+
+
+
+@app.post("/api/chat/rooms")
+def create_chat_room(payload: ChatRoomCreateRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    title = payload.title.strip()[:160]
+    usernames = []
+    seen_names: set[str] = set()
+    for raw in payload.usernames:
+        name = normalize_username(raw)
+        if name and name not in seen_names and name != user.username:
+            usernames.append(name)
+            seen_names.add(name)
+    if not usernames:
+        raise HTTPException(status_code=400, detail="Добавь хотя бы одного участника")
+    users = db.query(User).filter(User.username.in_(usernames)).all()
+    found = {item.username for item in users}
+    missing = [name for name in usernames if name not in found]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Пользователь не найден: {missing[0]}")
+    room = ChatRoom(title=title, creator_id=user.id)
+    db.add(room)
+    db.flush()
+    db.add(ChatRoomMember(room_id=room.id, user_id=user.id))
+    for member in users:
+        db.add(ChatRoomMember(room_id=room.id, user_id=member.id))
+    db.commit()
+    db.refresh(room)
+    return {"room": {"id": room.id, "title": room.title, "members": [user.username] + [member.username for member in users]}}
+
+
+@app.get("/api/chat/conversations")
+def chat_conversations(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    saved_last = (
+        db.query(ChatMessage)
+        .options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient))
+        .filter(ChatMessage.chat_type == "saved", ChatMessage.sender_id == user.id, ChatMessage.deleted_at.is_(None))
+        .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+        .first()
+    )
+    group_last = (
+        db.query(ChatMessage)
+        .options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient))
+        .filter(ChatMessage.chat_type == "group", ChatMessage.deleted_at.is_(None))
+        .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+        .first()
+    )
+    direct_rows = (
+        db.query(ChatMessage)
+        .options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient))
+        .filter(
+            ChatMessage.chat_type == "direct",
+            ChatMessage.deleted_at.is_(None),
+            ((ChatMessage.sender_id == user.id) | (ChatMessage.recipient_id == user.id)),
+        )
+        .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+        .limit(500)
+        .all()
+    )
+    room_items: list[dict[str, Any]] = []
+    memberships = (
+        db.query(ChatRoomMember)
+        .options(selectinload(ChatRoomMember.room))
+        .filter(ChatRoomMember.user_id == user.id)
+        .order_by(ChatRoomMember.created_at.desc())
+        .all()
+    )
+    for membership in memberships:
+        room = membership.room
+        if room is None:
+            continue
+        last = (
+            db.query(ChatMessage)
+            .options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient), selectinload(ChatMessage.room))
+            .filter(ChatMessage.chat_type == "room", ChatMessage.room_id == room.id, ChatMessage.deleted_at.is_(None))
+            .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+            .first()
+        )
+        room_items.append(chat_conversation_public("room", room.title, last, unread_count=unread_count_for_scope(db, user, "room", room=room), room=room))
+    hidden_direct = {
+        row.peer_user_id: int(row.last_hidden_message_id or 0)
+        for row in db.query(ChatDialogHidden).filter(ChatDialogHidden.user_id == user.id, ChatDialogHidden.chat_type == "direct").all()
+        if row.peer_user_id
+    }
+    direct_items: list[dict[str, Any]] = []
+    seen_peer_ids: set[int] = set()
+    for message in direct_rows:
+        peer = message.recipient if message.sender_id == user.id else message.sender
+        if peer is None or peer.id in seen_peer_ids:
+            continue
+        if int(hidden_direct.get(peer.id, 0)) >= int(message.id or 0):
+            continue
+        seen_peer_ids.add(peer.id)
+        direct_items.append(chat_conversation_public("direct", f"ЛС с {peer.username}", message, peer=peer, unread_count=unread_count_for_scope(db, user, "direct", peer)))
+    items = [chat_conversation_public("saved", "Избранное", saved_last), chat_conversation_public("group", "Общий чат", group_last, unread_count=unread_count_for_scope(db, user, "group"))] + room_items + direct_items
+    total_unread = sum(int(item.get("unread_count") or 0) for item in items)
+    return {"items": items, "unread_total": total_unread}
+
+
+
+
+@app.get("/api/chat/users/search")
+def chat_user_search(q: str = "", db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    term = normalize_username(q)
+    if len(term) < 1:
+        return {"items": []}
+    online_timeout = int(os.getenv("ONLINE_TIMEOUT_SECONDS", "60"))
+    users = (
+        db.query(User)
+        .filter(User.id != user.id, User.username.ilike(f"%{term}%"))
+        .order_by(User.username.asc())
+        .limit(8)
+        .all()
+    )
+    return {
+        "items": [
+            {
+                "id": item.id,
+                "username": item.username,
+                "is_online": bool(item.last_seen_at and datetime.utcnow() - item.last_seen_at <= timedelta(seconds=online_timeout)),
+            }
+            for item in users
+        ]
+    }
+
+@app.get("/api/chat/unread-count")
+def chat_unread_count(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    data = chat_conversations(db=db, user=user)
+    return {"unread_total": data.get("unread_total", 0), "items": data.get("items", [])}
+
+
+@app.post("/api/chat/read")
+async def chat_mark_read(payload: ChatReadRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    chat_type = normalize_chat_type(payload.chat_type)
+    peer_user = resolve_direct_recipient(db, user, payload.peer) if chat_type == "direct" else None
+    room = require_chat_room_member(db, user, payload.room_id) if chat_type == "room" else None
+    last_id = payload.last_message_id
+    if last_id <= 0:
+        query = db.query(ChatMessage.id).filter(ChatMessage.deleted_at.is_(None))
+        if chat_type == "saved":
+            query = query.filter(ChatMessage.chat_type == "saved", ChatMessage.sender_id == user.id)
+        elif chat_type == "group":
+            query = query.filter(ChatMessage.chat_type == "group")
+        elif chat_type == "direct":
+            query = query.filter(
+                ChatMessage.chat_type == "direct",
+                (((ChatMessage.sender_id == user.id) & (ChatMessage.recipient_id == peer_user.id)) | ((ChatMessage.sender_id == peer_user.id) & (ChatMessage.recipient_id == user.id))),
+            )
+        else:
+            query = query.filter(ChatMessage.chat_type == "room", ChatMessage.room_id == room.id)
+        last_id = query.order_by(ChatMessage.id.desc()).limit(1).scalar() or 0
+    state = set_chat_read_state(db, user, chat_type, peer_user, last_id, room=room)
+    event = {
+        "type": "read_state",
+        "chat_type": chat_type,
+        "peer": peer_user.username if peer_user else None,
+        "room_id": room.id if room else None,
+        "reader": {"id": user.id, "username": user.username},
+        "last_read_message_id": state.last_read_message_id,
+    }
+    if chat_type == "saved":
+        await CHAT_MANAGER.send_to_user(user.id, event)
+    elif chat_type == "group":
+        await CHAT_MANAGER.broadcast_group(event)
+    elif chat_type == "room":
+        user_ids = {row[0] for row in db.query(ChatRoomMember.user_id).filter(ChatRoomMember.room_id == room.id).all()}
+        for user_id in user_ids:
+            await CHAT_MANAGER.send_to_user(user_id, event)
+    else:
+        await CHAT_MANAGER.send_to_user(user.id, event)
+        await CHAT_MANAGER.send_to_user(peer_user.id, event)
+    return {"status": "ok", "last_read_message_id": state.last_read_message_id}
+
+
+
+
+
+
+@app.get("/api/chat/rooms/{room_id}")
+def chat_room_detail(room_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    room = require_chat_room_member(db, user, room_id)
+    online_timeout = int(os.getenv("ONLINE_TIMEOUT_SECONDS", "60"))
+    members = []
+    rows = db.query(ChatRoomMember).options(selectinload(ChatRoomMember.user)).filter(ChatRoomMember.room_id == room.id).order_by(ChatRoomMember.created_at.asc()).all()
+    for membership in rows:
+        member = membership.user
+        if not member:
+            continue
+        is_online = bool(member.last_seen_at and datetime.utcnow() - member.last_seen_at <= timedelta(seconds=online_timeout))
+        members.append({
+            "id": member.id,
+            "username": member.username,
+            "is_online": is_online,
+            "last_seen_at": member.last_seen_at.isoformat() if member.last_seen_at else None,
+        })
+    return {"room": {"id": room.id, "title": room.title, "created_at": room.created_at.isoformat()}, "members": members}
+
+
+@app.delete("/api/chat/dialogs/direct/{username}")
+def chat_hide_direct_dialog(username: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    peer = resolve_direct_recipient(db, user, username)
+    last_id = db.query(ChatMessage.id).filter(
+        ChatMessage.chat_type == "direct",
+        ChatMessage.deleted_at.is_(None),
+        (((ChatMessage.sender_id == user.id) & (ChatMessage.recipient_id == peer.id)) | ((ChatMessage.sender_id == peer.id) & (ChatMessage.recipient_id == user.id))),
+    ).order_by(ChatMessage.id.desc()).limit(1).scalar() or 0
+    hidden = db.scalar(select(ChatDialogHidden).where(
+        ChatDialogHidden.user_id == user.id,
+        ChatDialogHidden.chat_type == "direct",
+        ChatDialogHidden.peer_user_id == peer.id,
+    ))
+    if hidden is None:
+        hidden = ChatDialogHidden(user_id=user.id, chat_type="direct", peer_user_id=peer.id, last_hidden_message_id=int(last_id or 0))
+        db.add(hidden)
+    else:
+        hidden.last_hidden_message_id = max(int(hidden.last_hidden_message_id or 0), int(last_id or 0))
+        hidden.hidden_at = datetime.utcnow()
+    db.commit()
+    return {"status": "hidden", "peer": peer.username, "last_hidden_message_id": int(last_id or 0)}
+
+
+@app.delete("/api/chat/rooms/{room_id}/leave")
+def chat_leave_room(room_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    room = db.get(ChatRoom, room_id)
+    membership = get_room_member(db, user, room_id)
+    if room is None or membership is None:
+        raise HTTPException(status_code=404, detail="Группа не найдена")
+    db.delete(membership)
+    db.commit()
+    return {"status": "left", "room_id": room_id}
+
+
+@app.post("/api/chat/messages/{message_id}/forward")
+async def chat_forward_message(
+    message_id: int,
+    payload: ChatForwardRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    original = db.query(ChatMessage).options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient)).get(message_id)
+    if original is None or original.deleted_at is not None or not can_user_see_chat_message(user, original, db):
+        raise HTTPException(status_code=404, detail="Сообщение не найдено")
+    chat_type = normalize_chat_type(payload.chat_type)
+    recipient = resolve_direct_recipient(db, user, payload.peer) if chat_type == "direct" else None
+    room = require_chat_room_member(db, user, payload.room_id) if chat_type == "room" else None
+    prefix = f"Переслано от {original.sender.username if original.sender else 'пользователя'}"
+    source_text = (original.text or "").strip()
+    extra_text = (payload.text or "").strip()
+    text_parts = [prefix]
+    if source_text:
+        text_parts.append(source_text)
+    if extra_text:
+        text_parts.append(extra_text)
+    message = ChatMessage(
+        chat_type=chat_type,
+        sender_id=user.id,
+        recipient_id=recipient.id if recipient else None,
+        room_id=room.id if room else None,
+        text="\n\n".join(text_parts)[:5000],
+        attachment_original_name=original.attachment_original_name,
+        attachment_storage_path=original.attachment_storage_path,
+        attachment_mime_type=original.attachment_mime_type,
+        attachment_size=original.attachment_size,
+        attachment_kind=original.attachment_kind,
+    )
+    db.add(message)
+    db.commit()
+    message = db.query(ChatMessage).options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient), selectinload(ChatMessage.room)).get(message.id)
+    await broadcast_chat_message(db, message)
+    return {"message": chat_message_public_for_user(db, message, user)}
+
+@app.get("/api/chat/history")
+def chat_history(
+    chat_type: str = "group",
+    peer: Optional[str] = None,
+    room_id: Optional[int] = None,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    chat_type = normalize_chat_type(chat_type)
+    query = db.query(ChatMessage).options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient), selectinload(ChatMessage.room))
+    if chat_type == "saved":
+        query = query.filter(ChatMessage.chat_type == "saved", ChatMessage.sender_id == user.id, ChatMessage.deleted_at.is_(None))
+        chat_title = "Избранное"
+    elif chat_type == "group":
+        query = query.filter(ChatMessage.chat_type == "group", ChatMessage.deleted_at.is_(None))
+        chat_title = "Общий чат"
+    elif chat_type == "direct":
+        peer_user = resolve_direct_recipient(db, user, peer)
+        query = query.filter(
+            ChatMessage.chat_type == "direct",
+            ChatMessage.deleted_at.is_(None),
+            (
+                ((ChatMessage.sender_id == user.id) & (ChatMessage.recipient_id == peer_user.id)) |
+                ((ChatMessage.sender_id == peer_user.id) & (ChatMessage.recipient_id == user.id))
+            ),
+        )
+        chat_title = f"ЛС с {peer_user.username}"
+    else:
+        room = require_chat_room_member(db, user, room_id)
+        query = query.filter(ChatMessage.chat_type == "room", ChatMessage.room_id == room.id, ChatMessage.deleted_at.is_(None))
+        chat_title = room.title
+    rows = query.order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc()).limit(min(max(limit, 1), 300)).all()
+    rows.reverse()
+    apply_message_read_info(db, user, rows)
+    return {"chat_type": chat_type, "peer": peer, "title": chat_title, "items": [chat_message_public(row, current_user=user) for row in rows]}
+
+
+@app.post("/api/chat/upload")
+async def chat_upload(
+    chat_type: str = Form(default="group"),
+    recipient_username: Optional[str] = Form(default=None),
+    room_id: Optional[int] = Form(default=None),
+    text: str = Form(default=""),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    chat_type = normalize_chat_type(chat_type)
+    recipient = resolve_direct_recipient(db, user, recipient_username) if chat_type == "direct" else None
+    room = require_chat_room_member(db, user, room_id) if chat_type == "room" else None
+    original_name = Path(file.filename or "file").name[:255] or "file"
+    kind, mime = attachment_kind_for(original_name, file.content_type)
+    content = await file.read(CHAT_MAX_UPLOAD_BYTES + 1)
+    if len(content) > CHAT_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"Файл слишком большой. Лимит: {CHAT_MAX_UPLOAD_MB} МБ")
+    if not content:
+        raise HTTPException(status_code=400, detail="Файл пустой")
+    today = datetime.utcnow()
+    extension = safe_file_extension(kind, original_name, mime)
+    rel_dir = Path(str(today.year), f"{today.month:02d}", f"{today.day:02d}")
+    target_dir = CHAT_MEDIA_DIR / rel_dir
+    target_dir.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{uuid.uuid4().hex}{extension}"
+    target_path = target_dir / stored_name
+    target_path.write_bytes(content)
+    message = ChatMessage(
+        chat_type=chat_type,
+        sender_id=user.id,
+        recipient_id=recipient.id if recipient else None,
+        room_id=room.id if room else None,
+        text=(text or "").strip()[:5000],
+        attachment_original_name=original_name,
+        attachment_storage_path=str((rel_dir / stored_name).as_posix()),
+        attachment_mime_type=mime,
+        attachment_size=len(content),
+        attachment_kind=kind,
+    )
+    db.add(message)
+    db.commit()
+    message = db.query(ChatMessage).options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient), selectinload(ChatMessage.room)).get(message.id)
+    await broadcast_chat_message(db, message)
+    return {"message": chat_message_public_for_user(db, message, user)}
+
+
+@app.patch("/api/chat/messages/{message_id}")
+async def chat_update_message(
+    message_id: int,
+    payload: ChatMessageUpdateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    message = db.query(ChatMessage).options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient)).get(message_id)
+    if message is None or not can_user_see_chat_message(user, message, db):
+        raise HTTPException(status_code=404, detail="Сообщение не найдено")
+    if not can_modify_chat_message(user, message):
+        raise HTTPException(status_code=403, detail="Редактировать сообщение можно только в течение суток")
+    message.text = payload.text.strip()[:5000]
+    message.edited_at = datetime.utcnow()
+    db.commit()
+    message = db.query(ChatMessage).options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient)).get(message_id)
+    await broadcast_chat_event(db, message, "message_updated")
+    return {"message": chat_message_public_for_user(db, message, user)}
+
+
+@app.delete("/api/chat/messages/{message_id}")
+async def chat_delete_message(
+    message_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    message = db.query(ChatMessage).options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient)).get(message_id)
+    if message is None or not can_user_see_chat_message(user, message, db):
+        raise HTTPException(status_code=404, detail="Сообщение не найдено")
+    if not can_modify_chat_message(user, message):
+        raise HTTPException(status_code=403, detail="Удалить сообщение можно только в течение суток")
+    message.deleted_at = datetime.utcnow()
+    message.text = ""
+    db.commit()
+    message = db.query(ChatMessage).options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient)).get(message_id)
+    await broadcast_chat_event(db, message, "message_deleted")
+    return {"message": chat_message_public_for_user(db, message, user)}
+
+
+@app.get("/api/chat/attachments/{message_id}")
+def chat_attachment(
+    message_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user_from_optional_token),
+) -> FileResponse:
+    message = db.get(ChatMessage, message_id)
+    if message is None or message.deleted_at is not None or not message.attachment_storage_path or not can_user_see_chat_message(user, message, db):
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    path = (CHAT_MEDIA_DIR / message.attachment_storage_path).resolve()
+    root = CHAT_MEDIA_DIR.resolve()
+    if root not in path.parents and path != root:
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Файл не найден на диске")
+    disposition = "inline" if (message.attachment_kind in {"image", "text", "markdown", "notebook", "docx", "pdf"}) else "attachment"
+    return FileResponse(
+        path,
+        media_type=message.attachment_mime_type or "application/octet-stream",
+        filename=message.attachment_original_name or path.name,
+        content_disposition_type=disposition,
+    )
+
+
+@app.get("/api/chat/attachments/{message_id}/preview")
+def chat_attachment_preview(
+    message_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user_from_optional_token),
+) -> HTMLResponse:
+    message = db.get(ChatMessage, message_id)
+    if message is None or message.deleted_at is not None or not message.attachment_storage_path or not can_user_see_chat_message(user, message, db):
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    path = (CHAT_MEDIA_DIR / message.attachment_storage_path).resolve()
+    root = CHAT_MEDIA_DIR.resolve()
+    if root not in path.parents and path != root or not path.exists():
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    title = html_escape(message.attachment_original_name or "Файл")
+    kind = message.attachment_kind or "file"
+    if kind == "text":
+        body = f"<pre>{html_escape(read_text_attachment(path))}</pre>"
+    elif kind == "markdown":
+        body = markdown_to_safe_html(read_text_attachment(path))
+    elif kind == "notebook":
+        body = notebook_to_safe_html(read_text_attachment(path, max_chars=1_000_000))
+    elif kind == "docx":
+        body = docx_to_safe_html(path)
+    elif kind == "pdf":
+        pdf_url = f"/api/chat/attachments/{message.id}?token={html_escape(user_token_for_preview(db, user))}"
+        body = f"<iframe class='preview-pdf' src='{pdf_url}' title='{title}'></iframe>"
+    elif kind == "image":
+        body = f"<img class='preview-image' src='/api/chat/attachments/{message.id}?token={html_escape(user_token_for_preview(db, user))}' alt='{title}'>"
+    else:
+        body = "<p>Онлайн-просмотр для этого файла недоступен.</p>"
+    html = f"""<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{title}</title><style>
+    body{{margin:0;background:#f4f7fb;color:#172033;font-family:Inter,system-ui,-apple-system,'Segoe UI',Arial,sans-serif;line-height:1.6}}
+    main{{width:min(980px,calc(100% - 24px));margin:20px auto;background:#fff;border:1px solid #d9e0ea;border-radius:18px;padding:20px;box-shadow:0 10px 28px rgba(20,33,61,.08)}}
+    h1{{font-size:24px;margin:0 0 14px}} pre{{white-space:pre-wrap;overflow:auto;background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px}} code{{background:#eef2ff;border-radius:6px;padding:2px 5px}} .preview-image{{max-width:100%;height:auto;border-radius:14px}} .preview-pdf{{width:100%;height:78vh;border:1px solid #d9e0ea;border-radius:14px}} .notebook-cell{{border:1px solid #d9e0ea;border-radius:14px;margin:12px 0;padding:12px;background:#fbfdff}} .notebook-label{{font-weight:800;color:#667085;margin-bottom:8px}} p{{margin:8px 0}}
+    </style></head><body><main><h1>{title}</h1>{body}</main></body></html>"""
+    return HTMLResponse(html)
+
+
+def user_token_for_preview(db: Session, user: User) -> str:
+    token = db.scalar(select(AuthToken.token).where(AuthToken.user_id == user.id).order_by(AuthToken.created_at.desc()))
+    return token or ""
+
+
+@app.websocket("/ws/chat")
+async def chat_websocket(websocket: WebSocket, token: Optional[str] = None) -> None:
+    db = SessionLocal()
+    user = get_user_by_token(db, token)
+    if user is None:
+        await websocket.close(code=1008)
+        db.close()
+        return
+    await CHAT_MANAGER.connect(user.id, websocket)
+    await websocket.send_json({"type": "connected", "user": {"id": user.id, "username": user.username}})
+    try:
+        while True:
+            data = await websocket.receive_json()
+            event_type = data.get("type")
+            if event_type != "message":
+                continue
+            user.last_seen_at = datetime.utcnow()
+            db.commit()
+            db.refresh(user)
+            text_value = str(data.get("text") or "").strip()
+            if not text_value:
+                await websocket.send_json({"type": "error", "message": "Нельзя отправить пустое сообщение"})
+                continue
+            if len(text_value) > 5000:
+                await websocket.send_json({"type": "error", "message": "Сообщение слишком длинное"})
+                continue
+            chat_type = normalize_chat_type(data.get("chat_type"))
+            recipient = resolve_direct_recipient(db, user, data.get("recipient_username")) if chat_type == "direct" else None
+            room = require_chat_room_member(db, user, data.get("room_id")) if chat_type == "room" else None
+            message = ChatMessage(
+                chat_type=chat_type,
+                sender_id=user.id,
+                recipient_id=recipient.id if recipient else None,
+                room_id=room.id if room else None,
+                text=text_value,
+            )
+            db.add(message)
+            db.commit()
+            message = db.query(ChatMessage).options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient), selectinload(ChatMessage.room)).get(message.id)
+            await broadcast_chat_message(db, message)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        try:
+            await websocket.send_json({"type": "error", "message": "Ошибка чата"})
+        except Exception:
+            pass
+    finally:
+        CHAT_MANAGER.disconnect(user.id, websocket)
+        db.close()
 
 @app.post("/api/admin/login")
 def admin_login(payload: AdminLoginRequest) -> dict[str, Any]:
@@ -616,7 +1697,7 @@ def admin_clear_patch_notes(admin: str = Depends(get_admin_user)) -> dict[str, A
 @app.get("/api/admin/metrics")
 def admin_metrics(db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
     now = datetime.utcnow()
-    online_timeout = int(os.getenv("ONLINE_TIMEOUT_SECONDS", "300"))
+    online_timeout = int(os.getenv("ONLINE_TIMEOUT_SECONDS", "60"))
     online_since = now - timedelta(seconds=online_timeout)
     users_total = db.query(User).count()
     online_users = db.query(User).filter(User.last_seen_at.isnot(None), User.last_seen_at >= online_since).count()
@@ -725,6 +1806,276 @@ def admin_active_session_summary(db: Session, user: User) -> dict[str, Any] | No
         "difficulties": difficulties,
         "current_question": current_question,
     }
+
+
+
+
+@app.get("/api/admin/chat/conversations")
+def admin_chat_conversations(db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    group_last = (
+        db.query(ChatMessage)
+        .options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient))
+        .filter(ChatMessage.chat_type == "group", ChatMessage.deleted_at.is_(None))
+        .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+        .first()
+    )
+    group_count = db.query(ChatMessage.id).filter(ChatMessage.chat_type == "group", ChatMessage.deleted_at.is_(None)).count()
+    items.append({
+        "key": "group",
+        "type": "group",
+        "title": "Общий чат",
+        "count": group_count,
+        "updated_at": group_last.created_at.isoformat() if group_last else None,
+        "last_message": chat_preview_text(group_last),
+        "last_sender": group_last.sender.username if group_last and group_last.sender else None,
+    })
+    saved_users = (
+        db.query(User)
+        .join(ChatMessage, ChatMessage.sender_id == User.id)
+        .filter(ChatMessage.chat_type == "saved", ChatMessage.deleted_at.is_(None))
+        .distinct()
+        .order_by(User.username.asc())
+        .all()
+    )
+    for saved_user in saved_users:
+        last = (
+            db.query(ChatMessage)
+            .options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient))
+            .filter(ChatMessage.chat_type == "saved", ChatMessage.sender_id == saved_user.id, ChatMessage.deleted_at.is_(None))
+            .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+            .first()
+        )
+        count = db.query(ChatMessage.id).filter(ChatMessage.chat_type == "saved", ChatMessage.sender_id == saved_user.id, ChatMessage.deleted_at.is_(None)).count()
+        items.append({
+            "key": f"saved:{saved_user.id}",
+            "type": "saved",
+            "title": f"Избранное: {saved_user.username}",
+            "users": [saved_user.username],
+            "count": count,
+            "updated_at": last.created_at.isoformat() if last else None,
+            "last_message": chat_preview_text(last),
+            "last_sender": saved_user.username,
+        })
+    for room in db.query(ChatRoom).order_by(ChatRoom.created_at.desc(), ChatRoom.id.desc()).all():
+        last = (
+            db.query(ChatMessage)
+            .options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient), selectinload(ChatMessage.room))
+            .filter(ChatMessage.chat_type == "room", ChatMessage.room_id == room.id, ChatMessage.deleted_at.is_(None))
+            .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+            .first()
+        )
+        count = db.query(ChatMessage.id).filter(ChatMessage.chat_type == "room", ChatMessage.room_id == room.id, ChatMessage.deleted_at.is_(None)).count()
+        member_names = [row[0] for row in db.query(User.username).join(ChatRoomMember, ChatRoomMember.user_id == User.id).filter(ChatRoomMember.room_id == room.id).order_by(User.username.asc()).all()]
+        items.append({
+            "key": f"room:{room.id}",
+            "type": "room",
+            "title": f"Группа: {room.title}",
+            "users": member_names,
+            "count": count,
+            "updated_at": (last.created_at if last else room.created_at).isoformat(),
+            "last_message": chat_preview_text(last),
+            "last_sender": last.sender.username if last and last.sender else None,
+        })
+
+    rows = (
+        db.query(ChatMessage)
+        .options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient))
+        .filter(ChatMessage.chat_type == "direct", ChatMessage.deleted_at.is_(None))
+        .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+        .limit(2000)
+        .all()
+    )
+    seen: set[tuple[int, int]] = set()
+    for message in rows:
+        if not message.sender or not message.recipient:
+            continue
+        a, b = sorted([message.sender_id, message.recipient_id])
+        key_pair = (a, b)
+        if key_pair in seen:
+            continue
+        seen.add(key_pair)
+        left = message.sender if message.sender_id == a else message.recipient
+        right = message.recipient if message.sender_id == a else message.sender
+        count = db.query(ChatMessage.id).filter(
+            ChatMessage.chat_type == "direct",
+            ChatMessage.deleted_at.is_(None),
+            (((ChatMessage.sender_id == a) & (ChatMessage.recipient_id == b)) | ((ChatMessage.sender_id == b) & (ChatMessage.recipient_id == a))),
+        ).count()
+        items.append({
+            "key": admin_chat_conversation_key("direct", a, b),
+            "type": "direct",
+            "title": admin_chat_conversation_title("direct", left, right),
+            "users": [left.username if left else str(a), right.username if right else str(b)],
+            "count": count,
+            "updated_at": message.created_at.isoformat(),
+            "last_message": chat_preview_text(message),
+            "last_sender": message.sender.username if message.sender else None,
+        })
+    return {"items": items}
+
+
+@app.get("/api/admin/chat/messages")
+def admin_chat_messages(chat_key: str = "group", limit: int = 200, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    query = db.query(ChatMessage).options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient)).filter(ChatMessage.deleted_at.is_(None))
+    title = "Общий чат"
+    members: list[dict[str, Any]] = []
+    room_for_actions: ChatRoom | None = None
+    if chat_key == "group":
+        query = query.filter(ChatMessage.chat_type == "group")
+    elif chat_key.startswith("saved:"):
+        try:
+            saved_user_id = int(chat_key.split(":", 1)[1])
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Некорректный чат")
+        saved_user = db.get(User, saved_user_id)
+        if saved_user is None:
+            raise HTTPException(status_code=404, detail="Пользователь не найден")
+        title = f"Избранное: {saved_user.username}"
+        query = query.filter(ChatMessage.chat_type == "saved", ChatMessage.sender_id == saved_user.id)
+    elif chat_key.startswith("room:"):
+        try:
+            room_id = int(chat_key.split(":", 1)[1])
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Некорректный чат")
+        room = db.get(ChatRoom, room_id)
+        if room is None:
+            raise HTTPException(status_code=404, detail="Чат не найден")
+        title = f"Группа: {room.title}"
+        room_for_actions = room
+        members = [
+            {"id": member.user.id, "username": member.user.username}
+            for member in db.query(ChatRoomMember).options(selectinload(ChatRoomMember.user)).filter(ChatRoomMember.room_id == room.id).order_by(ChatRoomMember.created_at.asc()).all()
+            if member.user
+        ]
+        query = query.filter(ChatMessage.chat_type == "room", ChatMessage.room_id == room.id)
+    elif chat_key.startswith("direct:"):
+        try:
+            _, raw_a, raw_b = chat_key.split(":", 2)
+            a, b = int(raw_a), int(raw_b)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Некорректный чат")
+        left = db.get(User, a)
+        right = db.get(User, b)
+        title = admin_chat_conversation_title("direct", left, right)
+        query = query.filter(
+            ChatMessage.chat_type == "direct",
+            (((ChatMessage.sender_id == a) & (ChatMessage.recipient_id == b)) | ((ChatMessage.sender_id == b) & (ChatMessage.recipient_id == a))),
+        )
+    else:
+        raise HTTPException(status_code=400, detail="Некорректный чат")
+    rows = query.order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc()).limit(min(max(limit, 1), 500)).all()
+    rows.reverse()
+    return {"chat_key": chat_key, "title": title, "room_id": room_for_actions.id if room_for_actions else None, "members": members, "items": [admin_chat_message_public(row) for row in rows]}
+
+
+@app.delete("/api/admin/chat/messages/{message_id}")
+async def admin_chat_delete_message(message_id: int, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    message = db.query(ChatMessage).options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient)).get(message_id)
+    if message is None or message.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Сообщение не найдено")
+    media_deleted = remove_chat_media_if_unused(db, message)
+    message.deleted_at = datetime.utcnow()
+    message.text = ""
+    message.attachment_storage_path = None
+    message.attachment_original_name = None
+    message.attachment_mime_type = None
+    message.attachment_size = None
+    message.attachment_kind = None
+    db.commit()
+    message = db.query(ChatMessage).options(selectinload(ChatMessage.sender), selectinload(ChatMessage.recipient)).get(message_id)
+    await broadcast_chat_event(db, message, "message_deleted")
+    return {"status": "deleted", "message_id": message_id, "media_deleted": media_deleted}
+
+
+
+
+@app.delete("/api/admin/chat/rooms/{room_id}/members/{user_id}")
+def admin_chat_remove_room_member(room_id: int, user_id: int, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    room = db.get(ChatRoom, room_id)
+    if room is None:
+        raise HTTPException(status_code=404, detail="Группа не найдена")
+    membership = db.scalar(select(ChatRoomMember).where(ChatRoomMember.room_id == room_id, ChatRoomMember.user_id == user_id))
+    if membership is None:
+        raise HTTPException(status_code=404, detail="Участник не найден")
+    db.delete(membership)
+    db.commit()
+    return {"status": "removed", "room_id": room_id, "user_id": user_id}
+
+
+@app.delete("/api/admin/chat/rooms/{room_id}")
+async def admin_chat_delete_room(room_id: int, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    room = db.get(ChatRoom, room_id)
+    if room is None:
+        raise HTTPException(status_code=404, detail="Группа не найдена")
+    member_ids = [row[0] for row in db.query(ChatRoomMember.user_id).filter(ChatRoomMember.room_id == room_id).all()]
+    messages = db.query(ChatMessage).filter(ChatMessage.chat_type == "room", ChatMessage.room_id == room_id).all()
+    media_deleted = 0
+    for message in messages:
+        if message.attachment_storage_path and remove_chat_media_if_unused(db, message):
+            media_deleted += 1
+        db.delete(message)
+    db.query(ChatReadState).filter(ChatReadState.chat_type == "room", ChatReadState.room_id == room_id).delete(synchronize_session=False)
+    db.query(ChatRoomMember).filter(ChatRoomMember.room_id == room_id).delete(synchronize_session=False)
+    db.delete(room)
+    db.commit()
+    event = {"type": "room_deleted", "room_id": room_id}
+    for member_id in member_ids:
+        await CHAT_MANAGER.send_to_user(member_id, event)
+    return {"status": "deleted", "room_id": room_id, "messages_deleted": len(messages), "media_deleted": media_deleted}
+
+
+@app.get("/api/admin/chat/attachments/{message_id}")
+def admin_chat_attachment(message_id: int, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> FileResponse:
+    message = db.get(ChatMessage, message_id)
+    if message is None or message.deleted_at is not None or not message.attachment_storage_path:
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    path = (CHAT_MEDIA_DIR / message.attachment_storage_path).resolve()
+    root = CHAT_MEDIA_DIR.resolve()
+    if root not in path.parents and path != root or not path.exists():
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    disposition = "inline" if (message.attachment_kind in {"image", "text", "markdown", "notebook", "docx", "pdf"}) else "attachment"
+    return FileResponse(
+        path,
+        media_type=message.attachment_mime_type or "application/octet-stream",
+        filename=message.attachment_original_name or path.name,
+        content_disposition_type=disposition,
+    )
+
+
+@app.get("/api/admin/chat/attachments/{message_id}/preview")
+def admin_chat_attachment_preview(message_id: int, db: Session = Depends(get_db), admin: str = Depends(get_admin_user), admin_token: Optional[str] = Query(default=None)) -> HTMLResponse:
+    message = db.get(ChatMessage, message_id)
+    if message is None or message.deleted_at is not None or not message.attachment_storage_path:
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    path = (CHAT_MEDIA_DIR / message.attachment_storage_path).resolve()
+    root = CHAT_MEDIA_DIR.resolve()
+    if root not in path.parents and path != root or not path.exists():
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    title = html_escape(message.attachment_original_name or "Файл")
+    kind = message.attachment_kind or "file"
+    token_param = html_escape(admin_token or "")
+    if kind == "text":
+        body = f"<pre>{html_escape(read_text_attachment(path))}</pre>"
+    elif kind == "markdown":
+        body = markdown_to_safe_html(read_text_attachment(path))
+    elif kind == "notebook":
+        body = notebook_to_safe_html(read_text_attachment(path, max_chars=1_000_000))
+    elif kind == "docx":
+        body = docx_to_safe_html(path)
+    elif kind == "pdf":
+        pdf_url = f"/api/admin/chat/attachments/{message.id}?admin_token={token_param}"
+        body = f"<iframe class='preview-pdf' src='{pdf_url}' title='{title}'></iframe>"
+    elif kind == "image":
+        body = f"<img class='preview-image' src='/api/admin/chat/attachments/{message.id}?admin_token={token_param}' alt='{title}'>"
+    else:
+        body = "<p>Онлайн-просмотр для этого файла недоступен.</p>"
+    html = f"""<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{title}</title><style>
+    body{{margin:0;background:#f4f7fb;color:#172033;font-family:Inter,system-ui,-apple-system,'Segoe UI',Arial,sans-serif;line-height:1.6}}
+    main{{width:min(980px,calc(100% - 24px));margin:20px auto;background:#fff;border:1px solid #d9e0ea;border-radius:18px;padding:20px;box-shadow:0 10px 28px rgba(20,33,61,.08)}}
+    h1{{font-size:24px;margin:0 0 14px}} pre{{white-space:pre-wrap;overflow:auto;background:#0f172a;color:#e2e8f0;border-radius:14px;padding:14px}} code{{background:#eef2ff;border-radius:6px;padding:2px 5px}} .preview-image{{max-width:100%;height:auto;border-radius:14px}} .preview-pdf{{width:100%;height:78vh;border:1px solid #d9e0ea;border-radius:14px}} .notebook-cell{{border:1px solid #d9e0ea;border-radius:14px;margin:12px 0;padding:12px;background:#fbfdff}} .notebook-label{{font-weight:800;color:#667085;margin-bottom:8px}} p{{margin:8px 0}}
+    </style></head><body><main><h1>{title}</h1>{body}</main></body></html>"""
+    return HTMLResponse(html)
 
 
 @app.get("/api/admin/users")
@@ -844,7 +2195,10 @@ def me(user: User = Depends(get_current_user)) -> dict[str, Any]:
 
 
 @app.post("/api/auth/ping")
-def auth_ping(user: User = Depends(get_current_user)) -> dict[str, Any]:
+def auth_ping(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    user.last_seen_at = datetime.utcnow()
+    db.commit()
+    db.refresh(user)
     return {"status": "ok", "last_seen_at": user.last_seen_at.isoformat() if user.last_seen_at else None}
 
 

@@ -55,6 +55,7 @@
       <button data-view="errors" class="nav">Ошибки</button>
       <button data-view="results" class="nav">Результаты</button>
       <button data-view="stats" class="nav">Аналитика</button>
+      <button id="chatNavBtn" data-view="chat" class="nav chat-nav-btn">Чат <span id="chatUnreadBadge" class="nav-badge hidden">0</span></button>
       <button id="returnToTestBtn" class="nav return-test-btn hidden" type="button">Вернуться к тесту</button>
     </aside>
 
@@ -247,6 +248,55 @@
           <div id="statsPanel"></div>
         </div>
       </section>
+
+      <section id="chat" class="view">
+        <div class="chat-shell card">
+          <aside class="chat-sidebar">
+            <div class="chat-sidebar-head">
+              <h2>Чат</h2>
+              <p class="muted">Избранное, общий чат, группы и личные сообщения.</p>
+            </div>
+            <div class="chat-search-box">
+              <label>Найти пользователя
+                <div class="chat-peer-row">
+                  <input id="chatPeerInput" placeholder="логин" autocomplete="off" />
+                  <button id="chatOpenDirectBtn" class="secondary" type="button">ЛС</button>
+                  <div id="chatPeerSuggestions" class="chat-peer-suggestions hidden"></div>
+                </div>
+              </label>
+            </div>
+            <div class="chat-dialogs-head">
+              <span>Диалоги</span>
+              <button id="chatRefreshDialogsBtn" class="secondary small-btn" type="button">↻</button>
+            </div>
+            <button id="chatCreateGroupBtn" class="secondary chat-create-group" type="button">＋ Создать группу</button>
+            <div id="chatConversationList" class="chat-conversation-list">
+              <button id="chatSavedBtn" class="chat-room active" type="button">Избранное</button><button id="chatGroupBtn" class="chat-room" type="button">Общий чат</button>
+            </div>
+          </aside>
+          <section class="chat-main">
+            <div class="chat-header">
+              <div>
+                <h2 id="chatTitle">Избранное</h2>
+                <p id="chatSubtitle" class="muted">Личный чат с самим собой для заметок, файлов и материалов.</p>
+              </div>
+            </div>
+            <div id="chatMessages" class="chat-messages"></div>
+            <div class="chat-compose-wrap">
+              <div id="chatEditPreview" class="chat-reply-preview hidden"></div>
+              <div id="chatReplyPreview" class="chat-reply-preview hidden"></div>
+              <div id="chatPendingFile" class="chat-pending-file hidden"></div>
+              <div class="chat-compose">
+                <input id="chatFileInput" class="hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif,text/plain,text/markdown,.txt,.md,.ipynb,.docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                <button id="chatAttachBtn" class="secondary chat-attach" type="button">📎</button>
+                <textarea id="chatInput" rows="1" placeholder="Сообщение..."></textarea>
+                <button id="chatSendBtn" type="button">Отправить</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+
     </section>
   </main>
 

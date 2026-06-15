@@ -220,3 +220,96 @@ class NotificationDismissal(Base):
     dismissed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     user: Mapped[User] = relationship("User")
+
+
+class ChatRoom(Base):
+    __tablename__ = "chat_rooms"
+    __table_args__ = (Index("ix_chat_rooms_created", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    title: Mapped[str] = mapped_column(String(160))
+    creator_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    creator: Mapped[User] = relationship("User")
+
+
+class ChatRoomMember(Base):
+    __tablename__ = "chat_room_members"
+    __table_args__ = (
+        UniqueConstraint("room_id", "user_id", name="uq_chat_room_member"),
+        Index("ix_chat_room_members_user", "user_id", "room_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    room_id: Mapped[int] = mapped_column(ForeignKey("chat_rooms.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    room: Mapped[ChatRoom] = relationship("ChatRoom")
+    user: Mapped[User] = relationship("User")
+
+
+class ChatDialogHidden(Base):
+    __tablename__ = "chat_dialog_hidden"
+    __table_args__ = (
+        UniqueConstraint("user_id", "chat_type", "peer_user_id", name="uq_chat_dialog_hidden"),
+        Index("ix_chat_dialog_hidden_user", "user_id", "chat_type", "peer_user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    chat_type: Mapped[str] = mapped_column(String(20), default="direct")
+    peer_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    last_hidden_message_id: Mapped[int] = mapped_column(Integer, default=0)
+    hidden_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    user: Mapped[User] = relationship("User", foreign_keys=[user_id])
+    peer: Mapped[Optional[User]] = relationship("User", foreign_keys=[peer_user_id])
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    __table_args__ = (
+        Index("ix_chat_messages_scope_created", "chat_type", "recipient_id", "created_at"),
+        Index("ix_chat_messages_sender_created", "sender_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chat_type: Mapped[str] = mapped_column(String(20), default="group", index=True)
+    sender_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    recipient_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    room_id: Mapped[Optional[int]] = mapped_column(ForeignKey("chat_rooms.id", ondelete="CASCADE"), nullable=True, index=True)
+    text: Mapped[str] = mapped_column(Text, default="")
+    attachment_original_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    attachment_storage_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    attachment_mime_type: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    attachment_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    attachment_kind: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    edited_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+
+    sender: Mapped[User] = relationship("User", foreign_keys=[sender_id])
+    recipient: Mapped[Optional[User]] = relationship("User", foreign_keys=[recipient_id])
+    room: Mapped[Optional[ChatRoom]] = relationship("ChatRoom")
+
+
+class ChatReadState(Base):
+    __tablename__ = "chat_read_states"
+    __table_args__ = (
+        UniqueConstraint("user_id", "chat_type", "peer_user_id", name="uq_chat_read_scope"),
+        Index("ix_chat_read_user_scope", "user_id", "chat_type", "peer_user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    chat_type: Mapped[str] = mapped_column(String(20), default="group")
+    peer_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    room_id: Mapped[Optional[int]] = mapped_column(ForeignKey("chat_rooms.id", ondelete="CASCADE"), nullable=True, index=True)
+    last_read_message_id: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    user: Mapped[User] = relationship("User", foreign_keys=[user_id])
+    peer: Mapped[Optional[User]] = relationship("User", foreign_keys=[peer_user_id])
+    room: Mapped[Optional[ChatRoom]] = relationship("ChatRoom", foreign_keys=[room_id])

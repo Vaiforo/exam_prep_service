@@ -29,6 +29,19 @@ let theoryMode = localStorage.getItem('examPrepTheoryMode') || 'standard';
 let pendingNoticeItems = [];
 let currentNoticeItem = null;
 let noticePollTimer = null;
+let chatSocket = null;
+let chatReconnectTimer = null;
+let chatMode = 'saved';
+let chatPeer = '';
+let chatRoomId = null;
+let chatRenderedIds = new Set();
+let chatConversations = [];
+let pendingChatFile = null;
+let chatMessageCache = new Map();
+let chatReplyTarget = null;
+let chatEditingMessage = null;
+let chatUnreadTotal = 0;
+let chatPeerSuggestTimer = null;
 
 const $ = id => document.getElementById(id);
 const show = name => {
@@ -51,10 +64,10 @@ async function pingActivity(force = false){
 function bindActivityTracking(){
   if(activityTrackingBound) return;
   activityTrackingBound = true;
-  ['click', 'touchstart', 'keydown'].forEach(eventName => {
+  ['click', 'touchstart', 'keydown', 'mousemove', 'scroll'].forEach(eventName => {
     document.addEventListener(eventName, () => pingActivity(false), {passive:true});
   });
-  setInterval(() => pingActivity(true), 60000);
+  document.addEventListener('visibilitychange', () => { if(!document.hidden) pingActivity(true); });
 }
 
 function initTheme(){
@@ -83,7 +96,7 @@ async function init(){
 }
 
 function bindEvents(){
-  document.querySelectorAll('.nav').forEach(b => b.onclick = () => { show(b.dataset.view); if(b.dataset.view==='errors') loadErrors(); if(b.dataset.view==='results') loadResults(); if(b.dataset.view==='stats') loadStats(); if(b.dataset.view==='flashcards') initFlashcards(); if(b.dataset.view==='theory') renderTheoryTopic(); if(b.dataset.view==='dashboard') refreshCustomFlowInfo(); });
+  document.querySelectorAll('.nav').forEach(b => b.onclick = () => { show(b.dataset.view); if(b.dataset.view==='errors') loadErrors(); if(b.dataset.view==='results') loadResults(); if(b.dataset.view==='stats') loadStats(); if(b.dataset.view==='flashcards') initFlashcards(); if(b.dataset.view==='theory') renderTheoryTopic(); if(b.dataset.view==='dashboard') refreshCustomFlowInfo(); if(b.dataset.view==='chat') openChatPage(); });
   document.querySelectorAll('.mode').forEach(b => b.onclick = () => {
     const mode = b.dataset.mode;
     startTest({mode, count: mode === 'errors' ? 1000 : 20});
@@ -105,6 +118,21 @@ function bindEvents(){
   $('importBtn').onclick = () => { $('importFile').value = ''; $('importFile').click(); };
   $('notificationsBtn').onclick = () => { show('notifications'); loadNotificationHistory(); };
   $('clearUserNotificationsBtn').onclick = clearUserNotifications;
+
+  if($('chatSavedBtn')) $('chatSavedBtn').onclick = openSavedChat;
+  if($('chatGroupBtn')) $('chatGroupBtn').onclick = openGroupChat;
+  $('chatOpenDirectBtn').onclick = openDirectChatFromInput;
+  $('chatPeerInput').addEventListener('input', handleChatPeerInput);
+  $('chatPeerInput').addEventListener('keydown', event => { if(event.key === 'Enter'){ event.preventDefault(); openDirectChatFromInput(); } });
+  document.addEventListener('click', event => { if(!event.target.closest('.chat-peer-row')) hideChatPeerSuggestions(); if(!event.target.closest('.chat-dialog-menu-wrap')) document.querySelectorAll('.chat-dialog-menu').forEach(menu => menu.classList.add('hidden')); });
+  $('chatRefreshDialogsBtn').onclick = () => loadChatConversations(true);
+  $('chatCreateGroupBtn').onclick = showCreateChatRoomModal;
+  $('chatSendBtn').onclick = sendChatText;
+  $('chatAttachBtn').onclick = () => { $('chatFileInput').value = ''; $('chatFileInput').click(); };
+  $('chatFileInput').onchange = event => { const file = event.target.files?.[0]; if(file) setPendingChatFile(file); event.target.value = ''; };
+  $('chatInput').addEventListener('keydown', event => { if(event.key === 'Enter' && !event.shiftKey){ event.preventDefault(); sendChatText(); } });
+  $('chatInput').addEventListener('paste', handleChatPaste);
+  bindChatDragAndDrop();
   $('importFile').onchange = importProgress;
   $('themeToggle').onclick = toggleTheme;
   $('loginBtn').onclick = () => authSubmit('login');
@@ -139,6 +167,7 @@ async function checkAuth(){
 
 function showAuth(){
   stopNotificationPolling();
+  disconnectChatSocket();
   pendingNoticeItems = [];
   currentNoticeItem = null;
   $('siteNotice')?.classList.add('hidden');
@@ -163,9 +192,12 @@ async function showApp(){
   $('importBtn').classList.remove('hidden');
   $('notificationsBtn').classList.remove('hidden');
   $('userBox').textContent = `Пользователь: ${currentUser.username}`;
+  await pingActivity(true);
   await loadTopics();
   await loadSummary();
   await loadSiteNotifications(true);
+  await loadChatUnreadCount();
+  connectChatSocket();
   startNotificationPolling();
   show('dashboard');
   updateBuilderCountMode();
@@ -192,6 +224,7 @@ async function authSubmit(mode){
 
 async function logout(){
   stopNotificationPolling();
+  disconnectChatSocket();
   try{ await api('/api/auth/logout', {method:'POST'}); }catch{}
   authToken = '';
   currentUser = null;
@@ -731,6 +764,991 @@ function renderNotificationCard(item){
     <div class="muted">${formatOmskDate(item.created_at)}${item.archived ? ' · архив' : ''}${item.dismissed ? ' · закрыто' : ''}</div>
     ${changes}
   </article>`;
+}
+
+
+async function openChatPage(){
+  connectChatSocket();
+  await loadChatConversations(false);
+  loadChatHistory();
+}
+
+function disconnectChatSocket(){
+  if(chatReconnectTimer) clearTimeout(chatReconnectTimer);
+  chatReconnectTimer = null;
+  if(chatSocket){
+    try{ chatSocket.close(); }catch{}
+  }
+  chatSocket = null;
+}
+
+function connectChatSocket(){
+  if(!authToken) return;
+  if(chatSocket && (chatSocket.readyState === WebSocket.OPEN || chatSocket.readyState === WebSocket.CONNECTING)) return;
+  const status = $('chatStatus');
+  if(status) status.textContent = 'Подключение...';
+  const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+  chatSocket = new WebSocket(`${protocol}://${location.host}/ws/chat?token=${encodeURIComponent(authToken)}`);
+  chatSocket.onopen = () => { if($('chatStatus')) $('chatStatus').textContent = 'Онлайн'; };
+  chatSocket.onmessage = event => {
+    let payload = null;
+    try{ payload = JSON.parse(event.data); }catch{return;}
+    if(payload.type === 'connected'){
+      if($('chatStatus')) $('chatStatus').textContent = 'Онлайн';
+      return;
+    }
+    if(payload.type === 'error'){
+      toast(payload.message || 'Ошибка чата');
+      return;
+    }
+    if(['message','message_updated','message_deleted'].includes(payload.type) && payload.message){
+      loadChatConversations(false);
+      loadChatUnreadCount();
+      if(chatMessageBelongsToCurrent(payload.message)){
+        if(payload.type === 'message') appendChatMessage(payload.message);
+        else if(payload.type === 'message_deleted') removeChatMessage(payload.message.id);
+        else replaceChatMessage(payload.message);
+        markCurrentChatReadSoon();
+      }
+    }
+    if(payload.type === 'read_state'){
+      loadChatConversations(false);
+      loadChatUnreadCount();
+      updateVisibleReadIndicators(payload);
+    }
+  };
+  chatSocket.onclose = () => {
+    if($('chatStatus')) $('chatStatus').textContent = 'Нет соединения, переподключение...';
+    chatSocket = null;
+    if(authToken && document.getElementById('chat')?.classList.contains('active')){
+      if(chatReconnectTimer) clearTimeout(chatReconnectTimer);
+      chatReconnectTimer = setTimeout(connectChatSocket, 2500);
+    }
+  };
+}
+
+
+async function loadChatConversations(showToast = false){
+  const box = $('chatConversationList');
+  if(!box) return;
+  try{
+    const data = await api('/api/chat/conversations');
+    chatConversations = data.items || [];
+    chatUnreadTotal = Number(data.unread_total || 0);
+    updateChatUnreadBadge();
+    renderChatConversations();
+    if(showToast) toast('Диалоги обновлены');
+  }catch(err){
+    box.innerHTML = `<p class="muted chat-dialog-empty">${escapeHtml(err.message || 'Не удалось загрузить диалоги')}</p>`;
+  }
+}
+
+function renderChatConversations(){
+  const box = $('chatConversationList');
+  if(!box) return;
+  const items = chatConversations.length ? chatConversations : [{type:'saved', title:'Избранное', last_message:'Сообщений пока нет'}, {type:'group', title:'Общий чат', last_message:'Сообщений пока нет'}];
+  box.innerHTML = items.map(item => renderConversationButton(item)).join('');
+  box.querySelectorAll('.chat-dialog').forEach(dialog => {
+    dialog.onclick = event => {
+      if(event.target.closest('.chat-dialog-menu-btn') || event.target.closest('.chat-dialog-menu')) return;
+      if(dialog.dataset.chatType === 'saved') openSavedChat();
+      else if(dialog.dataset.chatType === 'group') openGroupChat();
+      else if(dialog.dataset.chatType === 'room') openRoomChat(Number(dialog.dataset.roomId || 0));
+      else openDirectChat(dialog.dataset.peer || '');
+    };
+    dialog.onkeydown = event => {
+      if(event.key === 'Enter' || event.key === ' '){ event.preventDefault(); dialog.click(); }
+    };
+  });
+}
+
+function renderConversationButton(item){
+  const itemRoomId = Number(item.room_id || 0) || null;
+  const active = item.type === chatMode && (item.type === 'saved' || item.type === 'group' || item.peer === chatPeer || (item.type === 'room' && itemRoomId === chatRoomId));
+  const title = item.type === 'saved' ? 'Избранное' : (item.type === 'group' ? 'Общий чат' : (item.type === 'room' ? (item.title || 'Группа') : (item.title || `ЛС с ${item.peer}`)));
+  const rawPreview = item.last_message || 'Сообщений пока нет';
+  const statusPreview = item.type === 'direct' && !item.is_online && item.last_seen_at ? `был(а) онлайн ${formatLastSeen(item.last_seen_at)}` : '';
+  const preview = statusPreview || rawPreview;
+  const time = item.updated_at ? formatChatTime(item.updated_at) : '';
+  const avatar = item.type === 'saved' ? '★' : (item.type === 'group' ? 'О' : (item.type === 'room' ? 'Г' : escapeHtml((item.peer || '?').slice(0,1).toUpperCase())));
+  const menu = renderChatDialogMenu(item);
+  return `<div class="chat-dialog ${active ? 'active' : ''}" role="button" tabindex="0" data-chat-type="${escapeAttribute(item.type || 'group')}" data-peer="${escapeAttribute(item.peer || '')}" data-room-id="${escapeAttribute(item.room_id || '')}">
+    <span class="chat-avatar ${item.type === 'direct' && item.is_online ? 'online' : ''} ${item.type === 'room' ? 'room' : ''} ${item.type === 'saved' ? 'saved' : ''}">${avatar}</span>
+    <span class="chat-dialog-body">
+      <span class="chat-dialog-top"><b>${escapeHtml(title)}</b>${item.unread_count ? `<mark>${item.unread_count}</mark>` : ''}${menu}</span>
+      <span class="chat-dialog-preview">${item.has_attachment ? '📎 ' : ''}${escapeHtml(preview)}</span>
+      <span class="chat-dialog-bottom">${time ? `<em>${time}</em>` : '<em></em>'}</span>
+    </span>
+  </div>`;
+}
+
+function renderChatDialogMenu(item){
+  if(item.type === 'direct' && item.peer){
+    return `<span class="chat-dialog-menu-wrap"><button class="chat-dialog-menu-btn" type="button" onclick="toggleChatDialogMenu(event)">⋯</button><span class="chat-dialog-menu hidden"><button type="button" onclick="deleteDirectDialog(event, '${escapeAttribute(item.peer)}')">Удалить чат</button></span></span>`;
+  }
+  if(item.type === 'room' && item.room_id){
+    return `<span class="chat-dialog-menu-wrap"><button class="chat-dialog-menu-btn" type="button" onclick="toggleChatDialogMenu(event)">⋯</button><span class="chat-dialog-menu hidden"><button type="button" onclick="showChatRoomMembers(event, ${Number(item.room_id)})">Участники</button><button type="button" onclick="leaveChatRoom(event, ${Number(item.room_id)})">Выйти из группы</button></span></span>`;
+  }
+  return '';
+}
+
+function toggleChatDialogMenu(event){
+  event.preventDefault();
+  event.stopPropagation();
+  const wrap = event.currentTarget.closest('.chat-dialog-menu-wrap');
+  const menu = wrap?.querySelector('.chat-dialog-menu');
+  const wasHidden = menu?.classList.contains('hidden');
+  document.querySelectorAll('.chat-dialog-menu').forEach(item => item.classList.add('hidden'));
+  if(menu && wasHidden) menu.classList.remove('hidden');
+}
+
+
+async function showChatRoomMembers(event, roomId){
+  event.preventDefault();
+  event.stopPropagation();
+  document.querySelectorAll('.chat-dialog-menu').forEach(item => item.classList.add('hidden'));
+  try{
+    const data = await api(`/api/chat/rooms/${roomId}`);
+    const members = data.members || [];
+    const html = `<div class="room-members-modal">
+      <div class="room-members-head"><span class="chat-avatar room">Г</span><div><b>${escapeHtml(data.room?.title || 'Группа')}</b><small>${members.length} участн.</small></div></div>
+      <div class="room-members-list">
+        ${members.map(member => `<div class="room-member-row"><span class="chat-avatar ${member.is_online ? 'online' : ''}">${escapeHtml((member.username || '?').slice(0,1).toUpperCase())}</span><div><b>${escapeHtml(member.username || 'user')}</b><small>${member.is_online ? 'онлайн' : (member.last_seen_at ? `был(а) онлайн ${formatLastSeen(member.last_seen_at)}` : 'оффлайн')}</small></div></div>`).join('') || '<p class="muted">Участников нет.</p>'}
+      </div>
+    </div>`;
+    await showModal({title:'Участники группы', message:'', extraHtml:html, confirmText:'Закрыть', cancelText:'Отмена'});
+  }catch(err){ toast(err.message || 'Не удалось открыть участников'); }
+}
+
+async function deleteDirectDialog(event, peer){
+  event.preventDefault();
+  event.stopPropagation();
+  document.querySelectorAll('.chat-dialog-menu').forEach(item => item.classList.add('hidden'));
+  const ok = await showModal({title:'Удалить чат?', message:`Диалог с ${peer} исчезнет из твоего списка. Если собеседник напишет снова, чат появится обратно.`, confirmText:'Удалить', cancelText:'Отмена', danger:true});
+  if(!ok) return;
+  try{
+    await api(`/api/chat/dialogs/direct/${encodeURIComponent(peer)}`, {method:'DELETE'});
+    if(chatMode === 'direct' && chatPeer === peer) openSavedChat();
+    await loadChatConversations(false);
+    toast('Чат удалён из списка');
+  }catch(err){ toast(err.message || 'Не удалось удалить чат'); }
+}
+
+async function leaveChatRoom(event, roomId){
+  event.preventDefault();
+  event.stopPropagation();
+  document.querySelectorAll('.chat-dialog-menu').forEach(item => item.classList.add('hidden'));
+  const ok = await showModal({title:'Выйти из группы?', message:'Группа исчезнет из списка твоих диалогов. Старые сообщения останутся у других участников.', confirmText:'Выйти', cancelText:'Отмена', danger:true});
+  if(!ok) return;
+  try{
+    await api(`/api/chat/rooms/${roomId}/leave`, {method:'DELETE'});
+    if(chatMode === 'room' && Number(chatRoomId) === Number(roomId)) openSavedChat();
+    await loadChatConversations(false);
+    toast('Ты вышел из группы');
+  }catch(err){ toast(err.message || 'Не удалось выйти из группы'); }
+}
+
+function formatChatTime(value){
+  if(!value) return '';
+  const raw = String(value);
+  const normalized = /Z$|[+-]\d{2}:?\d{2}$/.test(raw) ? raw : `${raw}Z`;
+  const date = new Date(normalized);
+  if(Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('ru-RU', {timeZone:'Asia/Omsk', hour:'2-digit', minute:'2-digit'}).format(date);
+}
+
+function formatLastSeen(value){
+  if(!value) return 'давно';
+  const raw = String(value);
+  const normalized = /Z$|[+-]\d{2}:?\d{2}$/.test(raw) ? raw : `${raw}Z`;
+  const date = new Date(normalized);
+  if(Number.isNaN(date.getTime())) return 'давно';
+  const now = Date.now();
+  const diff = Math.max(0, now - date.getTime());
+  if(diff < 60 * 1000) return 'только что';
+  if(diff < 60 * 60 * 1000){
+    const minutes = Math.max(1, Math.floor(diff / 60000));
+    return `${minutes} мин. назад`;
+  }
+  const today = new Intl.DateTimeFormat('ru-RU', {timeZone:'Asia/Omsk', day:'2-digit', month:'2-digit', year:'numeric'}).format(new Date());
+  const seenDay = new Intl.DateTimeFormat('ru-RU', {timeZone:'Asia/Omsk', day:'2-digit', month:'2-digit', year:'numeric'}).format(date);
+  const time = new Intl.DateTimeFormat('ru-RU', {timeZone:'Asia/Omsk', hour:'2-digit', minute:'2-digit'}).format(date);
+  return today === seenDay ? `сегодня в ${time}` : new Intl.DateTimeFormat('ru-RU', {timeZone:'Asia/Omsk', day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'}).format(date);
+}
+
+function directChatStatusText(peer){
+  const item = chatConversations.find(x => x.type === 'direct' && x.peer === peer);
+  if(!item) return 'Личные сообщения видите только вы и собеседник.';
+  if(item.is_online) return 'Собеседник онлайн';
+  return item.last_seen_at ? `Был(а) онлайн: ${formatLastSeen(item.last_seen_at)}` : 'Собеседник оффлайн';
+}
+
+
+async function loadChatUnreadCount(){
+  if(!authToken) return;
+  try{
+    const data = await api('/api/chat/unread-count');
+    chatUnreadTotal = Number(data.unread_total || 0);
+    updateChatUnreadBadge();
+  }catch{}
+}
+
+function updateChatUnreadBadge(){
+  const badge = $('chatUnreadBadge');
+  if(!badge) return;
+  if(chatUnreadTotal > 0){
+    badge.textContent = chatUnreadTotal > 99 ? '99+' : String(chatUnreadTotal);
+    badge.classList.remove('hidden');
+  }else{
+    badge.classList.add('hidden');
+  }
+}
+
+
+function updateVisibleReadIndicators(payload){
+  if(!payload || payload.reader?.username === currentUser?.username) return;
+  const lastRead = Number(payload.last_read_message_id || 0);
+  if(!lastRead) return;
+  for(const [id, message] of chatMessageCache.entries()){
+    if(Number(id) > lastRead) continue;
+    if(!currentUser || message.sender?.id !== currentUser.id) continue;
+    if(payload.chat_type === 'direct' && message.chat_type === 'direct'){
+      const reader = payload.reader?.username || '';
+      const peer = chatPeer || '';
+      if(reader !== peer) continue;
+      message.read_info = {kind:'direct', read:true};
+      replaceChatMessage(message);
+    }
+  }
+}
+
+let chatReadTimer = null;
+function markCurrentChatReadSoon(){
+  if(chatReadTimer) clearTimeout(chatReadTimer);
+  chatReadTimer = setTimeout(markCurrentChatRead, 250);
+}
+
+async function markCurrentChatRead(){
+  if(!document.getElementById('chat')?.classList.contains('active')) return;
+  const ids = [...chatMessageCache.keys()].map(Number).filter(Boolean);
+  const last = ids.length ? Math.max(...ids) : 0;
+  try{
+    await api('/api/chat/read', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({chat_type:chatMode, peer:chatPeer, room_id:chatRoomId, last_message_id:last})});
+    await loadChatConversations(false);
+    await loadChatUnreadCount();
+  }catch{}
+}
+
+function currentChatQuery(){
+  const params = new URLSearchParams();
+  params.set('chat_type', chatMode);
+  if(chatMode === 'direct') params.set('peer', chatPeer);
+  if(chatMode === 'room' && chatRoomId) params.set('room_id', chatRoomId);
+  params.set('limit', '100');
+  return params.toString();
+}
+
+async function loadChatHistory(markRead = true){
+  const list = $('chatMessages');
+  if(!list) return;
+  list.innerHTML = '<p class="muted chat-empty">Загрузка сообщений...</p>';
+  chatRenderedIds = new Set();
+  try{
+    const data = await api(`/api/chat/history?${currentChatQuery()}`);
+    $('chatTitle').textContent = data.title || (chatMode === 'direct' ? `ЛС с ${chatPeer}` : 'Общий чат');
+    $('chatSubtitle').textContent = chatMode === 'saved' ? 'Личный чат с самим собой для заметок, файлов и материалов.' : (chatMode === 'direct' ? directChatStatusText(chatPeer) : (chatMode === 'room' ? 'Групповой чат только для выбранных участников.' : 'Групповой чат между всеми пользователями.'));
+    list.innerHTML = '';
+    chatMessageCache = new Map();
+    (data.items || []).forEach(appendChatMessage);
+    if(!(data.items || []).length) list.innerHTML = '<p class="muted chat-empty">Сообщений пока нет. Напиши первым.</p>';
+    scrollChatToBottom();
+    if(markRead) markCurrentChatReadSoon();
+  }catch(err){
+    list.innerHTML = `<p class="muted chat-empty">${escapeHtml(err.message || 'Не удалось загрузить чат')}</p>`;
+  }
+}
+
+function handleChatPeerInput(event){
+  const query = event.target.value.trim();
+  if(chatPeerSuggestTimer) clearTimeout(chatPeerSuggestTimer);
+  if(query.length < 1){ hideChatPeerSuggestions(); return; }
+  chatPeerSuggestTimer = setTimeout(() => loadChatPeerSuggestions(query), 180);
+}
+
+async function loadChatPeerSuggestions(query){
+  const box = $('chatPeerSuggestions');
+  if(!box) return;
+  try{
+    const data = await api(`/api/chat/users/search?q=${encodeURIComponent(query)}`);
+    const items = data.items || [];
+    if(!items.length){ hideChatPeerSuggestions(); return; }
+    box.innerHTML = items.map(item => `
+      <button type="button" class="chat-peer-suggest" data-username="${escapeAttribute(item.username)}">
+        <span class="chat-avatar ${item.is_online ? 'online' : ''}">${escapeHtml((item.username || '?').slice(0,1).toUpperCase())}</span>
+        <span><b>${escapeHtml(item.username)}</b><em>${item.is_online ? 'онлайн' : 'пользователь'}</em></span>
+      </button>
+    `).join('');
+    box.classList.remove('hidden');
+    box.querySelectorAll('.chat-peer-suggest').forEach(btn => {
+      btn.onclick = () => openDirectChat(btn.dataset.username || '');
+    });
+  }catch(err){ hideChatPeerSuggestions(); }
+}
+
+function hideChatPeerSuggestions(){
+  const box = $('chatPeerSuggestions');
+  if(!box) return;
+  box.classList.add('hidden');
+  box.innerHTML = '';
+}
+
+function openSavedChat(){
+  hideChatPeerSuggestions();
+  clearChatEdit();
+  clearChatReply();
+  chatMode = 'saved';
+  chatPeer = '';
+  chatRoomId = null;
+  $('chatPeerInput').value = '';
+  renderChatConversations();
+  loadChatHistory();
+}
+
+function openGroupChat(){
+  hideChatPeerSuggestions();
+  clearChatEdit();
+  clearChatReply();
+  chatMode = 'group';
+  chatPeer = '';
+  chatRoomId = null;
+  $('chatPeerInput').value = '';
+  renderChatConversations();
+  loadChatHistory();
+}
+
+function openDirectChatFromInput(){
+  const peer = $('chatPeerInput').value.trim().toLowerCase();
+  if(peer.length < 3){ toast('Укажи логин собеседника'); return; }
+  openDirectChat(peer);
+}
+
+function openDirectChat(peer){
+  hideChatPeerSuggestions();
+  clearChatEdit();
+  clearChatReply();
+  chatMode = 'direct';
+  chatPeer = String(peer || '').trim().toLowerCase();
+  chatRoomId = null;
+  $('chatPeerInput').value = chatPeer;
+  renderChatConversations();
+  loadChatHistory();
+}
+
+function openRoomChat(roomId){
+  if(!roomId){ toast('Группа не найдена'); return; }
+  hideChatPeerSuggestions();
+  clearChatEdit();
+  clearChatReply();
+  chatMode = 'room';
+  chatPeer = '';
+  chatRoomId = Number(roomId);
+  $('chatPeerInput').value = '';
+  renderChatConversations();
+  loadChatHistory();
+}
+
+async function showCreateChatRoomModal(){
+  await loadChatConversations(false);
+  const directPeers = [...new Set(chatConversations.filter(item => item.type === 'direct' && item.peer).map(item => item.peer))].sort((a,b)=>a.localeCompare(b,'ru'));
+  const peerCards = directPeers.length ? directPeers.map(peer => `
+    <label class="room-peer-card" data-peer="${escapeAttribute(peer)}">
+      <input type="checkbox" class="roomPeerCheck" value="${escapeAttribute(peer)}">
+      <span class="chat-avatar">${escapeHtml(peer[0] || '?').toUpperCase()}</span>
+      <span class="room-peer-card-text">
+        <b>${escapeHtml(peer)}</b>
+        <small>Личный диалог</small>
+      </span>
+      <span class="room-peer-card-tick">✓</span>
+    </label>`).join('') : '<div class="room-empty-state">Личных диалогов пока нет. Добавь участников по логину ниже.</div>';
+
+  const modalPromise = showModal({
+    title:'Создать групповой чат',
+    message:'',
+    extraHtml:`
+      <div class="room-create-modal">
+        <div class="room-create-hero">
+          <div class="room-create-icon">👥</div>
+          <div>
+            <h4>Новая группа</h4>
+            <p>Выбери участников из диалогов или добавь новых по логину.</p>
+          </div>
+        </div>
+        <label class="modal-field room-title-field">
+          <span>Название группы</span>
+          <input id="roomTitleInput" maxlength="120" placeholder="Например: Подготовка к экзамену">
+        </label>
+        <div class="room-create-section">
+          <div class="room-section-head">
+            <b>Выбранные участники</b>
+            <span id="roomSelectedCount">0</span>
+          </div>
+          <div id="roomSelectedChips" class="room-selected-chips"><span class="muted">Пока никто не выбран.</span></div>
+        </div>
+        <div class="room-create-section">
+          <div class="room-section-head">
+            <b>Добавить по логину</b>
+            <span>поиск</span>
+          </div>
+          <div class="room-add-row">
+            <input id="roomUserAddInput" autocomplete="off" placeholder="Начни писать логин">
+            <button id="roomUserAddBtn" class="secondary" type="button">Добавить</button>
+            <div id="roomUserSuggestions" class="room-suggestions hidden"></div>
+          </div>
+          <small class="room-help">Можно добавить несколько участников по одному. Себя добавлять не нужно — ты уже в группе.</small>
+        </div>
+        <div class="room-create-section">
+          <div class="room-section-head">
+            <b>Из истории диалогов</b>
+            <span>${directPeers.length}</span>
+          </div>
+          <div class="room-peer-list pretty">${peerCards}</div>
+        </div>
+        <input id="roomUsersInput" type="hidden" value="">
+      </div>`,
+    confirmText:'Создать группу',
+    cancelText:'Отмена'
+  });
+
+  setupCreateChatRoomModal();
+  const ok = await modalPromise;
+  if(!ok) return;
+  const title = (document.getElementById('roomTitleInput')?.value || '').trim() || 'Групповой чат';
+  const usernames = (document.getElementById('roomUsersInput')?.value || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
+  if(!usernames.length){ toast('Добавь хотя бы одного участника'); return; }
+  try{
+    const result = await api('/api/chat/rooms', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title, usernames})});
+    await loadChatConversations(false);
+    openRoomChat(result.room?.id);
+    toast('Группа создана');
+  }catch(err){ toast(err.message || 'Не удалось создать группу'); }
+}
+
+function setupCreateChatRoomModal(){
+  const selected = new Set();
+  const hidden = document.getElementById('roomUsersInput');
+  const chips = document.getElementById('roomSelectedChips');
+  const count = document.getElementById('roomSelectedCount');
+  const addInput = document.getElementById('roomUserAddInput');
+  const addBtn = document.getElementById('roomUserAddBtn');
+  const suggestions = document.getElementById('roomUserSuggestions');
+  let searchTimer = null;
+
+  const normalize = value => String(value || '').trim().toLowerCase();
+  const syncHidden = () => { if(hidden) hidden.value = [...selected].join(','); };
+  const updateCards = () => {
+    document.querySelectorAll('.room-peer-card').forEach(card => {
+      const peer = normalize(card.dataset.peer || '');
+      const active = selected.has(peer);
+      card.classList.toggle('selected', active);
+      const input = card.querySelector('input');
+      if(input) input.checked = active;
+    });
+  };
+  const renderSelected = () => {
+    if(!chips || !count) return;
+    count.textContent = String(selected.size);
+    if(!selected.size){
+      chips.innerHTML = '<span class="muted">Пока никто не выбран.</span>';
+    }else{
+      chips.innerHTML = [...selected].sort((a,b)=>a.localeCompare(b,'ru')).map(username => `
+        <button type="button" class="room-chip" data-username="${escapeAttribute(username)}">
+          <span>${escapeHtml(username)}</span>
+          <b>×</b>
+        </button>`).join('');
+    }
+    syncHidden();
+    updateCards();
+  };
+  const addUser = username => {
+    const clean = normalize(username);
+    if(!clean) return;
+    if(currentUser?.username && clean === currentUser.username){
+      toast('Себя добавлять не нужно');
+      return;
+    }
+    selected.add(clean);
+    if(addInput) addInput.value = '';
+    if(suggestions) suggestions.classList.add('hidden');
+    renderSelected();
+  };
+
+  document.querySelectorAll('.roomPeerCheck').forEach(input => {
+    input.addEventListener('change', () => {
+      const peer = normalize(input.value);
+      if(input.checked) selected.add(peer); else selected.delete(peer);
+      renderSelected();
+    });
+  });
+  chips?.addEventListener('click', event => {
+    const btn = event.target.closest('.room-chip');
+    if(!btn) return;
+    selected.delete(normalize(btn.dataset.username || ''));
+    renderSelected();
+  });
+  addBtn?.addEventListener('click', () => addUser(addInput?.value));
+  addInput?.addEventListener('keydown', event => {
+    if(event.key === 'Enter'){
+      event.preventDefault();
+      addUser(addInput.value);
+    }
+  });
+  addInput?.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    const q = normalize(addInput.value);
+    if(!suggestions || q.length < 2){
+      suggestions?.classList.add('hidden');
+      return;
+    }
+    searchTimer = setTimeout(async () => {
+      try{
+        const result = await api(`/api/chat/users/search?q=${encodeURIComponent(q)}`);
+        const items = (result.items || []).filter(item => item.username !== currentUser?.username && !selected.has(item.username));
+        if(!items.length){
+          suggestions.innerHTML = '<div class="room-suggestion-empty">Ничего не найдено</div>';
+        }else{
+          suggestions.innerHTML = items.map(item => `
+            <button type="button" class="room-suggestion" data-username="${escapeAttribute(item.username)}">
+              <span class="chat-avatar ${item.is_online ? 'online' : ''}">${escapeHtml(item.username[0] || '?').toUpperCase()}</span>
+              <span><b>${escapeHtml(item.username)}</b><small>${item.is_online ? 'Онлайн' : 'Пользователь'}</small></span>
+            </button>`).join('');
+        }
+        suggestions.classList.remove('hidden');
+      }catch(err){
+        suggestions.classList.add('hidden');
+      }
+    }, 220);
+  });
+  suggestions?.addEventListener('click', event => {
+    const btn = event.target.closest('.room-suggestion');
+    if(!btn) return;
+    addUser(btn.dataset.username || '');
+  });
+  renderSelected();
+}
+
+function chatMessageBelongsToCurrent(message){
+  if(!message) return false;
+  if(chatMode === 'saved') return message.chat_type === 'saved' && message.sender?.id === currentUser?.id;
+  if(chatMode === 'group') return message.chat_type === 'group';
+  if(chatMode === 'room') return message.chat_type === 'room' && Number(message.room_id || message.room?.id || 0) === Number(chatRoomId || 0);
+  if(message.chat_type !== 'direct') return false;
+  const sender = message.sender?.username || '';
+  const recipient = message.recipient?.username || '';
+  const me = currentUser?.username || '';
+  return (sender === chatPeer && recipient === me) || (sender === me && recipient === chatPeer);
+}
+
+function scrollChatToBottom(){
+  const list = $('chatMessages');
+  if(!list) return;
+  const doScroll = () => { list.scrollTop = list.scrollHeight; };
+  doScroll();
+  requestAnimationFrame(doScroll);
+  setTimeout(doScroll, 60);
+  setTimeout(doScroll, 180);
+  setTimeout(doScroll, 420);
+  list.querySelectorAll('img').forEach(img => {
+    if(!img.complete) img.addEventListener('load', doScroll, {once:true});
+  });
+}
+
+function appendChatMessage(message){
+  const list = $('chatMessages');
+  if(!list) return;
+  if(chatRenderedIds.has(message.id)) return;
+  const empty = list.querySelector('.chat-empty');
+  if(empty) empty.remove();
+  chatRenderedIds.add(message.id);
+  chatMessageCache.set(Number(message.id), message);
+  list.insertAdjacentHTML('beforeend', renderChatMessage(message));
+  scrollChatToBottom();
+}
+
+function removeChatMessage(messageId){
+  const list = $('chatMessages');
+  if(!list) return;
+  const old = list.querySelector(`[data-message-id="${messageId}"]`);
+  if(old) old.remove();
+  chatRenderedIds.delete(Number(messageId));
+  chatMessageCache.delete(Number(messageId));
+  if(!list.querySelector('.chat-message')){
+    list.innerHTML = '<div class="chat-empty muted">Сообщений пока нет.</div>';
+  }
+}
+
+function replaceChatMessage(message){
+  if(message?.is_deleted){ removeChatMessage(message.id); return; }
+  const list = $('chatMessages');
+  if(!list) return;
+  const old = list.querySelector(`[data-message-id="${message.id}"]`);
+  chatMessageCache.set(Number(message.id), message);
+  if(old) old.outerHTML = renderChatMessage(message);
+  else appendChatMessage(message);
+}
+
+function chatAttachmentUrl(attachment){
+  if(!attachment?.url) return '#';
+  return `${attachment.url}?token=${encodeURIComponent(authToken)}`;
+}
+
+function chatPreviewUrl(attachment){
+  if(!attachment?.preview_url) return chatAttachmentUrl(attachment);
+  return `${attachment.preview_url}?token=${encodeURIComponent(authToken)}`;
+}
+
+function formatFileSize(bytes){
+  const value = Number(bytes || 0);
+  if(value < 1024) return `${value} Б`;
+  if(value < 1024 * 1024) return `${(value / 1024).toFixed(1)} КБ`;
+  return `${(value / 1024 / 1024).toFixed(1)} МБ`;
+}
+
+function renderChatAttachment(attachment){
+  if(!attachment) return '';
+  const name = escapeHtml(attachment.original_name || 'Файл');
+  const size = formatFileSize(attachment.size);
+  const url = chatAttachmentUrl(attachment);
+  const preview = chatPreviewUrl(attachment);
+  if(attachment.kind === 'image'){
+    return `<div class="chat-image-wrap">
+      <a class="chat-image-link" href="${url}" target="_blank" rel="noopener"><img class="chat-image" src="${url}" alt="${name}"></a>
+      <a class="chat-image-download" href="${url}" download="${escapeAttribute(attachment.original_name || 'image')}" target="_blank" rel="noopener">Скачать</a>
+    </div>`;
+  }
+  const labels = {text:'TXT', markdown:'MD', notebook:'IPYNB', docx:'DOCX', pdf:'PDF'};
+  const label = labels[attachment.kind] || 'FILE';
+  return `<div class="chat-file-card">
+    <div class="chat-file-icon">${label}</div>
+    <div class="chat-file-info">
+      <b>${name}</b>
+      <span>${size}</span>
+      <div class="chat-file-actions">
+        <a href="${preview}" target="_blank" rel="noopener">Открыть онлайн</a>
+        <a href="${url}" target="_blank" rel="noopener">Скачать</a>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderChatMessage(message){
+  const own = message.is_own || (currentUser && message.sender?.id === currentUser.id);
+  const sender = own ? 'Вы' : (message.sender?.username || 'user');
+  const directLabel = message.chat_type === 'direct' ? '<span class="chat-direct-label">ЛС</span>' : '';
+  if(message.is_deleted) return '';
+  const text = message.text ? `<div class="chat-text">${escapeHtml(message.text).replace(/\n/g, '<br>')}</div>` : '';
+  const attachment = renderChatAttachment(message.attachment);
+  const edited = message.edited_at ? '<span class="chat-edited">изменено</span>' : '';
+  const readInfo = own ? renderReadInfo(message) : '';
+  const menu = renderMessageMenu(message, own);
+  return `<article class="chat-message ${own ? 'own' : 'other'}" data-message-id="${message.id}" data-message-text="${escapeAttribute(message.text || '')}">
+    <div class="chat-bubble">
+      <button class="chat-menu-btn" type="button" onclick="toggleChatMessageMenu(${message.id})">⋯</button>
+      ${menu}
+      <div class="chat-message-meta"><b>${escapeHtml(sender)}</b>${directLabel}<span>${formatOmskDate(message.created_at)}</span>${edited}${readInfo}</div>
+      ${text}
+      ${attachment}
+    </div>
+  </article>`;
+}
+
+function renderReadInfo(message){
+  const info = message.read_info || {};
+  if(info.kind === 'direct') return `<span class="chat-read-indicator ${info.read ? 'read' : ''}">${info.read ? '✓✓ прочитано' : '✓ отправлено'}</span>`;
+  if(info.kind === 'group') return `<span class="chat-read-indicator">👁 ${Number(info.read_count || 0)}</span>`;
+  return `<span class="chat-read-indicator">✓</span>`;
+}
+
+function renderMessageMenu(message, own){
+  const canModify = own && canModifyChatMessage(message);
+  return `<div id="chatMenu${message.id}" class="chat-message-menu hidden">
+    <button type="button" onclick="replyToChatMessage(${message.id})">Ответить</button>
+    <button type="button" onclick="forwardChatMessage(${message.id})">Переслать</button>
+    ${canModify ? `<button type="button" onclick="editChatMessage(${message.id})">Редактировать</button><button type="button" class="danger-text" onclick="deleteChatMessage(${message.id})">Удалить</button>` : ''}
+  </div>`;
+}
+
+
+function toggleChatMessageMenu(messageId){
+  document.querySelectorAll('.chat-message-menu').forEach(menu => {
+    if(menu.id !== `chatMenu${messageId}`) menu.classList.add('hidden');
+  });
+  const menu = $(`chatMenu${messageId}`);
+  if(menu) menu.classList.toggle('hidden');
+}
+
+function replyToChatMessage(messageId){
+  const message = chatMessageCache.get(Number(messageId));
+  if(!message) return;
+  chatReplyTarget = message;
+  renderChatReplyPreview();
+  const input = $('chatInput');
+  if(input) input.focus();
+  document.querySelectorAll('.chat-message-menu').forEach(menu => menu.classList.add('hidden'));
+}
+
+function renderChatReplyPreview(){
+  const box = $('chatReplyPreview');
+  if(!box) return;
+  if(!chatReplyTarget){ box.classList.add('hidden'); box.innerHTML = ''; return; }
+  const sender = chatReplyTarget.sender?.username || 'пользователь';
+  const text = (chatReplyTarget.text || chatReplyTarget.attachment?.original_name || 'сообщение').slice(0, 140);
+  box.innerHTML = `<div class="chat-reply-card"><div><b>Ответ ${escapeHtml(sender)}</b><span>${escapeHtml(text)}</span></div><button class="secondary small-btn" type="button" onclick="clearChatReply()">×</button></div>`;
+  box.classList.remove('hidden');
+}
+
+function clearChatReply(){
+  chatReplyTarget = null;
+  renderChatReplyPreview();
+}
+
+function renderChatEditPreview(){
+  const box = $('chatEditPreview');
+  const sendBtn = $('chatSendBtn');
+  if(!box) return;
+  if(!chatEditingMessage){
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    if(sendBtn) sendBtn.textContent = 'Отправить';
+    return;
+  }
+  box.innerHTML = `<div class="chat-reply-card chat-edit-card"><div><b>Редактирование сообщения</b><span>Измени текст в строке ввода и нажми «Сохранить».</span></div><button class="secondary small-btn" type="button" onclick="clearChatEdit()">×</button></div>`;
+  box.classList.remove('hidden');
+  if(sendBtn) sendBtn.textContent = 'Сохранить';
+}
+
+function clearChatEdit(){
+  chatEditingMessage = null;
+  renderChatEditPreview();
+  const input = $('chatInput');
+  if(input) input.value = '';
+}
+
+function applyReplyPrefix(text){
+  if(!chatReplyTarget) return text;
+  const sender = chatReplyTarget.sender?.username || 'пользователя';
+  const preview = (chatReplyTarget.text || chatReplyTarget.attachment?.original_name || 'сообщение').slice(0, 180);
+  clearChatReply();
+  return `Ответ на сообщение от ${sender}:\n${preview}\n\n${text || ''}`.trim();
+}
+
+async function forwardChatMessage(messageId){
+  document.querySelectorAll('.chat-message-menu').forEach(menu => menu.classList.add('hidden'));
+  await loadChatConversations(false);
+  const selected = await showForwardTargetModal();
+  if(!selected) return;
+  const payload = selected.type === 'saved' ? {chat_type:'saved'} : (selected.type === 'direct' ? {chat_type:'direct', peer:selected.peer} : (selected.type === 'room' ? {chat_type:'room', room_id:selected.room_id} : {chat_type:'group'}));
+  try{
+    const result = await api(`/api/chat/messages/${messageId}/forward`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    if(result.message && chatMessageBelongsToCurrent(result.message)) appendChatMessage(result.message);
+    await loadChatConversations(false);
+    toast(selected.type === 'saved' ? 'Сообщение переслано в Избранное' : (selected.type === 'direct' ? `Сообщение переслано в ЛС с ${selected.peer}` : (selected.type === 'room' ? 'Сообщение переслано в группу' : 'Сообщение переслано в общий чат')));
+  }catch(err){ toast(err.message || 'Не удалось переслать сообщение'); }
+}
+
+async function showForwardTargetModal(){
+  const dialogs = chatConversations.length ? chatConversations : [{type:'group', title:'Общий чат'}];
+  const options = dialogs.map(item => {
+    const value = item.type === 'saved' ? 'saved' : (item.type === 'direct' ? `direct:${item.peer}` : (item.type === 'room' ? `room:${item.room_id}` : 'group'));
+    const title = item.type === 'saved' ? 'Избранное' : (item.type === 'direct' ? (item.title || `ЛС с ${item.peer}`) : (item.type === 'room' ? (item.title || 'Группа') : 'Общий чат'));
+    const preview = item.last_message && item.last_message !== 'Сообщений пока нет' ? ` — ${item.last_message.slice(0, 60)}` : '';
+    return `<option value="${escapeAttribute(value)}">${escapeHtml(title + preview)}</option>`;
+  }).join('');
+  const ok = await showModal({
+    title:'Переслать сообщение',
+    message:'Выбери чат из истории диалогов.',
+    extraHtml:`<label class="modal-field">Куда переслать?<select id="forwardTargetSelect">${options}</select></label>`,
+    confirmText:'Переслать',
+    cancelText:'Отмена'
+  });
+  if(!ok) return null;
+  const value = document.getElementById('forwardTargetSelect')?.value || 'group';
+  if(value === 'saved') return {type:'saved'};
+  if(value.startsWith('direct:')) return {type:'direct', peer:value.slice('direct:'.length)};
+  if(value.startsWith('room:')) return {type:'room', room_id:Number(value.slice('room:'.length))};
+  return {type:'group', peer:''};
+}
+
+function canModifyChatMessage(message){
+  if(!message || message.is_deleted || !currentUser || message.sender?.id !== currentUser.id) return false;
+  const raw = String(message.created_at || '');
+  const normalized = /Z$|[+-]\d{2}:?\d{2}$/.test(raw) ? raw : `${raw}Z`;
+  const created = new Date(normalized).getTime();
+  if(Number.isNaN(created)) return false;
+  return Date.now() - created <= 24 * 60 * 60 * 1000;
+}
+
+async function editChatMessage(messageId){
+  document.querySelectorAll('.chat-message-menu').forEach(menu => menu.classList.add('hidden'));
+  const message = chatMessageCache.get(Number(messageId));
+  const article = document.querySelector(`[data-message-id="${messageId}"]`);
+  const currentText = message?.text || article?.dataset.messageText || '';
+  if(!currentText.trim()){ toast('Можно редактировать только текст сообщения'); return; }
+  if(pendingChatFile){ clearPendingChatFile(); }
+  clearChatReply();
+  chatEditingMessage = {id:Number(messageId), text:currentText};
+  const input = $('chatInput');
+  if(input){ input.value = currentText; input.focus(); }
+  renderChatEditPreview();
+}
+
+async function deleteChatMessage(messageId){
+  const ok = await showModal({title:'Удалить сообщение?', message:'Сообщение можно удалить только в течение суток после отправки.', confirmText:'Удалить', cancelText:'Отмена', danger:true});
+  if(!ok) return;
+  try{
+    const result = await api(`/api/chat/messages/${messageId}`, {method:'DELETE'});
+    if(result.message) removeChatMessage(result.message.id);
+    await loadChatConversations(false);
+  }catch(err){ toast(err.message || 'Не удалось удалить сообщение'); }
+}
+
+async function sendChatText(){
+  const input = $('chatInput');
+  let text = input.value.trim();
+  if(chatMode === 'direct' && !chatPeer){ toast('Сначала открой ЛС по логину'); return; }
+  if(chatMode === 'room' && !chatRoomId){ toast('Сначала открой групповой чат'); return; }
+  if(chatEditingMessage){
+    if(pendingChatFile){ toast('Во время редактирования нельзя прикреплять файл'); return; }
+    if(!text){ toast('Текст не может быть пустым'); return; }
+    try{
+      const result = await api(`/api/chat/messages/${chatEditingMessage.id}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text})});
+      if(result.message) replaceChatMessage(result.message);
+      await loadChatConversations(false);
+      chatEditingMessage = null;
+      renderChatEditPreview();
+      input.value = '';
+    }catch(err){ toast(err.message || 'Не удалось изменить сообщение'); }
+    return;
+  }
+  if(pendingChatFile){
+    text = applyReplyPrefix(text);
+    await uploadChatFileNow(pendingChatFile, text);
+    pendingChatFile = null;
+    renderPendingChatFile();
+    input.value = '';
+    return;
+  }
+  if(!text && !chatReplyTarget){ return; }
+  text = applyReplyPrefix(text);
+  connectChatSocket();
+  if(!chatSocket || chatSocket.readyState !== WebSocket.OPEN){ toast('Чат ещё подключается'); return; }
+  chatSocket.send(JSON.stringify({type:'message', chat_type:chatMode, recipient_username:chatPeer, room_id:chatRoomId, text}));
+  input.value = '';
+}
+
+function isChatFileAllowed(file){
+  if(!file) return false;
+  const allowedExt = ['.png','.jpg','.jpeg','.webp','.gif','.txt','.md','.ipynb','.docx','.pdf'];
+  const lower = String(file.name || '').toLowerCase();
+  const type = String(file.type || '').toLowerCase();
+  return type.startsWith('image/') || type === 'application/pdf' || allowedExt.some(ext => lower.endsWith(ext));
+}
+
+function supportedChatFileHint(){
+  return 'Можно прикреплять только изображения, PDF, TXT, MD, IPYNB и DOCX';
+}
+
+function setPendingChatFile(file){
+  if(!isChatFileAllowed(file)){
+    toast(supportedChatFileHint());
+    return false;
+  }
+  if(chatEditingMessage){ clearChatEdit(); }
+  pendingChatFile = file;
+  renderPendingChatFile();
+  toast('Файл прикреплён. Нажми «Отправить», чтобы отправить сообщение');
+  return true;
+}
+
+function clearPendingChatFile(){
+  pendingChatFile = null;
+  renderPendingChatFile();
+}
+
+function renderPendingChatFile(){
+  const box = $('chatPendingFile');
+  if(!box) return;
+  if(!pendingChatFile){ box.classList.add('hidden'); box.innerHTML = ''; return; }
+  const isImage = pendingChatFile.type.startsWith('image/');
+  const preview = isImage ? `<img src="${URL.createObjectURL(pendingChatFile)}" alt="preview">` : `<span class="chat-pending-icon">📎</span>`;
+  box.innerHTML = `<div class="chat-pending-card">
+    ${preview}
+    <div class="chat-pending-info"><b>${escapeHtml(pendingChatFile.name || 'Файл')}</b><span>${formatFileSize(pendingChatFile.size)}</span><em>Файл ещё не отправлен</em></div>
+    <button class="secondary small-btn" type="button" onclick="clearPendingChatFile()">Убрать</button>
+  </div>`;
+  box.classList.remove('hidden');
+}
+
+async function uploadChatFile(file, text = ''){
+  setPendingChatFile(file);
+}
+
+async function uploadChatFileNow(file, text = ''){
+  if(chatMode === 'direct' && !chatPeer){ toast('Сначала открой ЛС по логину'); return; }
+  if(chatMode === 'room' && !chatRoomId){ toast('Сначала открой групповой чат'); return; }
+  if(!isChatFileAllowed(file)){ toast(supportedChatFileHint()); return; }
+  const form = new FormData();
+  form.append('chat_type', chatMode);
+  form.append('recipient_username', chatPeer);
+  if(chatRoomId) form.append('room_id', chatRoomId);
+  form.append('text', text || '');
+  form.append('file', file, file.name || `clipboard-${Date.now()}.png`);
+  try{
+    const result = await api('/api/chat/upload', {method:'POST', body:form});
+    await loadChatConversations(false);
+    if(result.message && chatMessageBelongsToCurrent(result.message)) appendChatMessage(result.message);
+  }catch(err){
+    toast(err.message || 'Не удалось отправить файл');
+  }
+}
+
+
+function bindChatDragAndDrop(){
+  const zone = $('chatMessages');
+  if(!zone || zone.dataset.dropBound === '1') return;
+  zone.dataset.dropBound = '1';
+  ['dragenter', 'dragover'].forEach(eventName => {
+    zone.addEventListener(eventName, event => {
+      if(!event.dataTransfer?.types?.includes('Files')) return;
+      event.preventDefault();
+      zone.classList.add('drag-over');
+    });
+  });
+  ['dragleave', 'dragend'].forEach(eventName => {
+    zone.addEventListener(eventName, event => {
+      if(eventName === 'dragleave' && zone.contains(event.relatedTarget)) return;
+      zone.classList.remove('drag-over');
+    });
+  });
+  zone.addEventListener('drop', async event => {
+    if(!event.dataTransfer?.files?.length) return;
+    event.preventDefault();
+    zone.classList.remove('drag-over');
+    const files = [...event.dataTransfer.files];
+    if(files.length > 1) toast('Сейчас прикрепляется первый файл из списка');
+    setPendingChatFile(files[0]);
+  });
+}
+
+function handleChatPaste(event){
+  const items = [...(event.clipboardData?.items || [])];
+  const fileItem = items.find(item => item.kind === 'file' && (item.type.startsWith('image/') || item.type.includes('text') || item.type.includes('wordprocessingml') || item.type.includes('json') || item.type === 'application/pdf'));
+  if(!fileItem) return;
+  const file = fileItem.getAsFile();
+  if(!file) return;
+  event.preventDefault();
+  const name = file.name || (file.type.startsWith('image/') ? `screenshot-${Date.now()}.png` : `file-${Date.now()}`);
+  const renamed = new File([file], name, {type:file.type || 'application/octet-stream'});
+  setPendingChatFile(renamed);
 }
 
 async function loadErrors(){

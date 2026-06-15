@@ -3,6 +3,7 @@ let selectedUserId = null;
 let refreshTimer = null;
 let currentAdminTab = "users";
 let userSearchTimer = null;
+let selectedAdminChatKey = "group";
 
 const $ = id => document.getElementById(id);
 const toast = msg => {
@@ -70,6 +71,7 @@ async function init(){
       await loadReports();
       await loadMetrics();
       await loadAdminNotifications();
+      await loadAdminChat();
     }catch{
       adminToken = '';
       sessionStorage.removeItem('examAdminToken');
@@ -88,6 +90,7 @@ function bind(){
   $('sendNotificationBtn').onclick = sendAdminNotification;
   $('clearPatchNotesBtn').onclick = clearPatchNotes;
   $('savePatchNotesBtn').onclick = savePatchNotes;
+  if($('refreshAdminChatBtn')) $('refreshAdminChatBtn').onclick = () => loadAdminChat(true);
   $('userStatusFilter').onchange = loadUsers;
   $('userSearch').oninput = () => { clearTimeout(userSearchTimer); userSearchTimer = setTimeout(loadUsers, 250); };
   document.querySelectorAll('.admin-tab').forEach(btn => btn.onclick = () => switchAdminTab(btn.dataset.tab));
@@ -105,7 +108,8 @@ function startAutoRefresh(){
       if(currentAdminTab === 'users') loadUsers().catch(() => {});
       if(currentAdminTab === 'reports') loadReports().catch(() => {});
       if(currentAdminTab === 'metrics') loadMetrics().catch(() => {});
-  if(currentAdminTab === 'notifications') loadAdminNotifications().catch(() => {});
+      if(currentAdminTab === 'notifications') loadAdminNotifications().catch(() => {});
+      if(currentAdminTab === 'chat') loadAdminChat(false).catch(() => {});
     }
   }, 30000);
 }
@@ -118,7 +122,7 @@ function stopAutoRefresh(){
 function switchAdminTab(tab){
   currentAdminTab = tab || 'users';
   document.querySelectorAll('.admin-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === currentAdminTab));
-  ['users','reports','metrics','notifications'].forEach(name => {
+  ['users','reports','metrics','notifications','chat'].forEach(name => {
     const panel = $(`${name}Tab`);
     if(panel) panel.classList.toggle('hidden', name !== currentAdminTab);
   });
@@ -126,6 +130,7 @@ function switchAdminTab(tab){
   if(currentAdminTab === 'reports') loadReports().catch(() => {});
   if(currentAdminTab === 'metrics') loadMetrics().catch(() => {});
   if(currentAdminTab === 'notifications') loadAdminNotifications().catch(() => {});
+  if(currentAdminTab === 'chat') loadAdminChat(false).catch(() => {});
 }
 
 async function login(){
@@ -423,6 +428,134 @@ async function clearPatchNotes(){
   await loadAdminNotifications();
 }
 
+
+async function loadAdminChat(keepSelection = true){
+  if(!$('adminChatConversations')) return;
+  const data = await api('/api/admin/chat/conversations');
+  const items = data.items || [];
+  if(!keepSelection || !items.some(item => item.key === selectedAdminChatKey)){
+    selectedAdminChatKey = items[0]?.key || 'group';
+  }
+  renderAdminChatConversations(items);
+  if(selectedAdminChatKey) await loadAdminChatMessages(selectedAdminChatKey);
+}
+
+function renderAdminChatConversations(items){
+  const box = $('adminChatConversations');
+  if(!box) return;
+  if(!items.length){ box.innerHTML = '<p class="muted">Чатов пока нет.</p>'; return; }
+  box.innerHTML = items.map(item => `
+    <button class="admin-chat-dialog ${item.key === selectedAdminChatKey ? 'active' : ''}" type="button" data-key="${escapeAttribute(item.key)}">
+      <b>${escapeHtml(item.title || 'Чат')}</b>
+      <span>${escapeHtml(item.last_sender ? `${item.last_sender}: ${item.last_message || ''}` : (item.last_message || 'Сообщений пока нет'))}</span>
+      <em>${item.count || 0} сообщ.; ${formatOmskDate(item.updated_at)}</em>
+    </button>
+  `).join('');
+  box.querySelectorAll('.admin-chat-dialog').forEach(btn => {
+    btn.onclick = () => {
+      selectedAdminChatKey = btn.dataset.key || 'group';
+      renderAdminChatConversations(items);
+      loadAdminChatMessages(selectedAdminChatKey).catch(err => toast(err.message || 'Не удалось загрузить чат'));
+    };
+  });
+}
+
+async function loadAdminChatMessages(chatKey){
+  const data = await api(`/api/admin/chat/messages?chat_key=${encodeURIComponent(chatKey)}&limit=300`);
+  $('adminChatTitle').textContent = data.title || 'Чат';
+  $('adminChatCount').textContent = `${(data.items || []).length} сообщений`;
+  renderAdminChatRoomMembers(data);
+  renderAdminChatMessages(data.items || []);
+}
+
+
+function renderAdminChatRoomMembers(data){
+  const box = $('adminChatRoomMembers');
+  if(!box) return;
+  const members = data.members || [];
+  if(!data.room_id){
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
+  box.classList.remove('hidden');
+  box.innerHTML = `
+    <div class="admin-chat-members-head">
+      <div><b>Участники группы</b><span>${members.length} чел.</span></div>
+      <button class="danger" type="button" onclick="deleteAdminChatRoom(${Number(data.room_id)})">Удалить группу</button>
+    </div>
+    <div class="admin-chat-member-list">
+      ${members.length ? members.map(member => `
+        <div class="admin-chat-member">
+          <span>${escapeHtml(member.username || 'user')}</span>
+          <button class="secondary small-btn" type="button" onclick="removeAdminChatRoomMember(${Number(data.room_id)}, ${Number(member.id)})">Удалить из группы</button>
+        </div>`).join('') : '<p class="muted">Участников нет.</p>'}
+    </div>`;
+}
+
+function renderAdminChatMessages(items){
+  const box = $('adminChatMessages');
+  if(!box) return;
+  if(!items.length){ box.innerHTML = '<p class="muted">Сообщений нет.</p>'; return; }
+  box.classList.remove('muted');
+  box.innerHTML = items.map(message => {
+    const sender = message.sender?.username || 'user';
+    const recipient = message.recipient?.username ? ` → ${message.recipient.username}` : '';
+    const text = message.text ? `<div class="admin-chat-text">${escapeHtml(message.text).replace(/\n/g, '<br>')}</div>` : '';
+    const attachment = message.attachment ? renderAdminChatAttachment(message) : '';
+    return `<article class="admin-chat-message" data-message-id="${message.id}">
+      <div class="admin-chat-message-head">
+        <div><b>${escapeHtml(sender)}${escapeHtml(recipient)}</b><span>${formatOmskDate(message.created_at)}</span></div>
+        <button class="danger" type="button" onclick="deleteAdminChatMessage(${message.id})">Удалить</button>
+      </div>
+      ${text || '<div class="muted">Без текста</div>'}
+      ${attachment}
+    </article>`;
+  }).join('');
+}
+
+function renderAdminChatAttachment(message){
+  const attachment = message.attachment;
+  if(!attachment) return '';
+  const size = formatFileSize(attachment.size || 0);
+  const token = encodeURIComponent(adminToken || '');
+  const url = `/api/admin/chat/attachments/${message.id}?admin_token=${token}`;
+  const preview = `/api/admin/chat/attachments/${message.id}/preview?admin_token=${token}`;
+  const image = attachment.kind === 'image' ? `<a href="${url}" target="_blank" rel="noopener"><img class="admin-chat-image" src="${url}" alt="${escapeAttribute(attachment.original_name || 'image')}"></a>` : '';
+  return `<div class="admin-chat-attachment">
+    ${image}
+    <div><b>${escapeHtml(attachment.original_name || 'file')}</b><span>${escapeHtml(attachment.kind || 'file')} · ${size}</span></div>
+    <div class="admin-chat-file-actions"><a href="${preview}" target="_blank" rel="noopener">Открыть</a><a href="${url}" target="_blank" rel="noopener">Скачать</a></div>
+  </div>`;
+}
+
+
+async function removeAdminChatRoomMember(roomId, userId){
+  const ok = await confirmModal('Удалить участника из группы?', 'Пользователь больше не будет видеть эту группу и не сможет писать в неё.');
+  if(!ok) return;
+  await api(`/api/admin/chat/rooms/${roomId}/members/${userId}`, {method:'DELETE'});
+  toast('Участник удалён из группы');
+  await loadAdminChatMessages(selectedAdminChatKey);
+  await loadAdminChat(true);
+}
+
+async function deleteAdminChatRoom(roomId){
+  const ok = await confirmModal('Удалить группу?', 'Группа, сообщения и связанные записи будут удалены. Медиафайлы удалятся, если больше нигде не используются.');
+  if(!ok) return;
+  await api(`/api/admin/chat/rooms/${roomId}`, {method:'DELETE'});
+  toast('Группа удалена');
+  selectedAdminChatKey = 'group';
+  await loadAdminChat(false);
+}
+
+async function deleteAdminChatMessage(messageId){
+  const ok = await confirmModal('Удалить сообщение?', 'Сообщение исчезнет из чата. Если у него есть медиафайл и он больше нигде не используется, файл будет удалён с диска.');
+  if(!ok) return;
+  await api(`/api/admin/chat/messages/${messageId}`, {method:'DELETE'});
+  toast('Сообщение удалено');
+  await loadAdminChat(true);
+}
+
 async function loadMetrics(){
   if(!$('metricsList')) return;
   const m = await api('/api/admin/metrics');
@@ -492,6 +625,18 @@ function formatOmskDate(value){
     minute: '2-digit',
     second: '2-digit'
   }).format(date) + ' (Омск)';
+}
+
+
+function escapeAttribute(str){
+  return escapeHtml(str).replace(/`/g, '&#096;');
+}
+
+function formatFileSize(bytes){
+  bytes = Number(bytes || 0);
+  if(bytes < 1024) return `${bytes} Б`;
+  if(bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} МБ`;
 }
 
 function escapeHtml(str){
