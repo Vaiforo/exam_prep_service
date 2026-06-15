@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
@@ -37,6 +37,7 @@ from .services import (
 
 APP_DIR = Path(__file__).resolve().parent
 QUESTIONS_PATH = APP_DIR / "app_data" / "questions.json"
+APP_VERSION = os.getenv("APP_VERSION", "22")
 
 app = FastAPI(
     title="Numerical Methods Exam Prep",
@@ -53,6 +54,31 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+
+
+def render_versioned_html(path: Path) -> HTMLResponse:
+    html = path.read_text(encoding="utf-8").replace("__APP_VERSION__", APP_VERSION)
+    return HTMLResponse(
+        html,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
+@app.middleware("http")
+async def no_cache_for_ui_assets(request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path in {"/", "/admin", "/index.html"} or path.endswith((".html", ".css", ".js")):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
 
 ADMIN_TOKENS: set[str] = set()
 
@@ -191,9 +217,14 @@ def startup() -> None:
         db.close()
 
 
+@app.get("/")
+def index_page() -> HTMLResponse:
+    return render_versioned_html(APP_DIR / "static" / "index.html")
+
+
 @app.get("/admin")
-def admin_page() -> FileResponse:
-    return FileResponse(APP_DIR / "admin_static" / "index.html")
+def admin_page() -> HTMLResponse:
+    return render_versioned_html(APP_DIR / "admin_static" / "index.html")
 
 
 @app.post("/api/admin/login")

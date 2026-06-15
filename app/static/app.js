@@ -541,7 +541,11 @@ function renderTheory(raw){
   let text = String(raw || '').trim();
   if(!text) return '<p>Теория для темы пока не заполнена.</p>';
   // Старые данные могли содержать Markdown/LaTeX в формате $...$ и $$...$$.
-  text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, m) => `\\[${m.trim()}\\]`);
+  // Схлопываем многострочные display-формулы в одну строку, чтобы MathJax
+  // не показывал отдельные строки формулы как обычный текст.
+  const compactMath = value => value.trim().replace(/\s+/g, ' ');
+  text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, m) => `\\[${compactMath(m)}\\]`);
+  text = text.replace(/\\\[([\s\S]*?)\\\]/g, (_, m) => `\\[${compactMath(m)}\\]`);
   text = text.replace(/(^|[^\\])\$([^$\n]+?)\$/g, (_, prefix, m) => `${prefix}\\(${m.trim()}\\)`);
 
   const lines = text.split(/\n+/).map(x => x.trim()).filter(Boolean);

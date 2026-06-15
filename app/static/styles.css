@@ -75,3 +75,15 @@ html[data-theme="dark"] .feedback.good{background:#052e1a!important;border:1px s
 html[data-theme="dark"] .feedback.bad{background:#3b0a13!important;border:1px solid #fb7185!important;border-left:6px solid #f43f5e!important;color:#ffe4e6!important;box-shadow:0 0 0 1px rgba(251,113,133,.18),0 14px 32px rgba(244,63,94,.12)!important}
 html[data-theme="dark"] .feedback.good h3,html[data-theme="dark"] .feedback.good b{color:#86efac!important}html[data-theme="dark"] .feedback.bad h3,html[data-theme="dark"] .feedback.bad b{color:#fda4af!important}
 html[data-theme="dark"] .option.correct{background:#064e3b!important;border-color:#4ade80!important;color:#dcfce7!important}html[data-theme="dark"] .option.wrong{background:#4c0519!important;border-color:#fb7185!important;color:#ffe4e6!important}
+
+/* v19: calmer dark-theme blue buttons */
+html[data-theme="dark"] button:not(.danger),html[data-theme="dark"] .import-label{background:#1d4ed8!important;color:#f8fafc!important;border-color:#3b82f6!important}
+html[data-theme="dark"] button:not(.danger):hover,html[data-theme="dark"] .import-label:hover{background:#1e40af!important;color:#ffffff!important;border-color:#60a5fa!important}
+html[data-theme="dark"] .nav.active{background:#1d4ed8!important;color:#ffffff!important;border-color:#60a5fa!important}
+html[data-theme="dark"] .mode:hover,html[data-theme="dark"] .readiness:hover,html[data-theme="dark"] .difficulty:hover{background:#1d4ed8!important;border-color:#60a5fa!important;color:#ffffff!important}
+
+/* v21: secondary buttons stay neutral in dark mode */
+html[data-theme="dark"] button.secondary,html[data-theme="dark"] .secondary,html[data-theme="dark"] #themeToggle{background:#1f2937!important;color:#e5e7eb!important;border:1px solid #475569!important;box-shadow:none!important}
+html[data-theme="dark"] button.secondary:hover,html[data-theme="dark"] .secondary:hover,html[data-theme="dark"] #themeToggle:hover{background:#334155!important;color:#ffffff!important;border-color:#64748b!important}
+html[data-theme="dark"] .actions button.secondary,html[data-theme="dark"] .test-top button.secondary,html[data-theme="dark"] .flashcard-actions button.secondary,html[data-theme="dark"] .topic-buttons button.secondary,html[data-theme="dark"] .mini-actions button.secondary{background:#1f2937!important;color:#e5e7eb!important;border-color:#475569!important}
+html[data-theme="dark"] .actions button.secondary:hover,html[data-theme="dark"] .test-top button.secondary:hover,html[data-theme="dark"] .flashcard-actions button.secondary:hover,html[data-theme="dark"] .topic-buttons button.secondary:hover,html[data-theme="dark"] .mini-actions button.secondary:hover{background:#334155!important;color:#ffffff!important;border-color:#64748b!important}
