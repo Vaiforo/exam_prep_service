@@ -34,6 +34,13 @@
     <section id="adminView" class="hidden">
       <section class="panel toolbar">
         <button id="refreshBtn">Обновить пользователей</button>
+        <label class="inline-filter">Пользователи
+          <select id="userStatusFilter">
+            <option value="all">Все</option>
+            <option value="online">Онлайн</option>
+            <option value="offline">Оффлайн</option>
+          </select>
+        </label>
         <span id="adminInfo" class="muted"></span>
       </section>
 
@@ -48,6 +55,25 @@
           <div id="userDetails" class="details muted">Выберите пользователя слева.</div>
         </div>
       </section>
+
+      <section class="panel reports-panel">
+        <div class="reports-head">
+          <div>
+            <h2>Жалобы на ошибки</h2>
+            <p class="muted">Здесь отображаются жалобы пользователей на вопросы и теорию.</p>
+          </div>
+          <label class="inline-filter">Статус
+            <select id="reportStatusFilter">
+              <option value="all">Все</option>
+              <option value="new">Новые</option>
+              <option value="reviewed">Просмотренные</option>
+              <option value="resolved">Решённые</option>
+            </select>
+          </label>
+        </div>
+        <div id="reportsList" class="reports-list"></div>
+      </section>
+
     </section>
   </main>
 

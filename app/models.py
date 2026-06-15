@@ -168,3 +168,26 @@ class TestAnswer(Base):
 
     session: Mapped[TestSession] = relationship("TestSession", back_populates="answers")
     question: Mapped[Question] = relationship("Question")
+
+
+class ErrorReport(Base):
+    __tablename__ = "error_reports"
+    __table_args__ = (
+        Index("ix_error_reports_created", "created_at"),
+        Index("ix_error_reports_target", "target_type", "question_id", "topic_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    target_type: Mapped[str] = mapped_column(String(20), index=True)
+    question_id: Mapped[Optional[int]] = mapped_column(ForeignKey("questions.id", ondelete="SET NULL"), nullable=True, index=True)
+    topic_id: Mapped[Optional[int]] = mapped_column(ForeignKey("topics.id", ondelete="SET NULL"), nullable=True, index=True)
+    message: Mapped[str] = mapped_column(Text)
+    page_context: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="new", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    user: Mapped[Optional[User]] = relationship("User")
+    question: Mapped[Optional[Question]] = relationship("Question")
+    topic: Mapped[Optional[Topic]] = relationship("Topic")

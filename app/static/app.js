@@ -24,6 +24,7 @@ let lastFeedback = null;
 let flashcards = [];
 let flashIndex = 0;
 let flashFlipped = false;
+let reportContext = null;
 
 const $ = id => document.getElementById(id);
 const show = name => {
@@ -103,6 +104,8 @@ function bindEvents(){
   $('flashShuffle').onclick = shuffleFlashcards;
   $('flashcard').onclick = flipFlashcard;
   $('flashcard').onkeydown = (event) => { if(event.key === 'Enter' || event.key === ' '){ event.preventDefault(); flipFlashcard(); } };
+  $('reportSubmit').onclick = submitReport;
+  $('reportCancel').onclick = closeReportPanel;
 }
 
 async function checkAuth(){
@@ -211,7 +214,10 @@ function renderTheoryTopic(){
   const topic = topics.find(t => t.id === selectedId) || topics[0];
   $('theorySelect').value = String(topic.id);
   $('theoryPanel').innerHTML = `
-    <h3>${topic.external_id}. ${escapeHtml(topic.title)}</h3>
+    <div class="theory-title-row">
+      <h3>${topic.external_id}. ${escapeHtml(topic.title)}</h3>
+      <button class="report-btn" onclick="openTheoryReport(${topic.id})">Пожаловаться на ошибку</button>
+    </div>
     <div class="theory">${renderTheory(topic.theory || 'Теория для темы пока не заполнена.')}</div>
   `;
   if (window.MathJax) MathJax.typesetPromise();
@@ -280,7 +286,7 @@ function renderQuestion(){
   const q = item.question;
   $('testMeta').textContent = `${labelMode(currentSession)} · ${currentSession.answered}/${currentSession.total}`;
   $('questionCounter').textContent = `Вопрос ${currentIndex+1} из ${currentSession.questions.length} · ${q.topic_title || ''} · ${labelDifficulty(q.difficulty)}`;
-  $('questionText').innerHTML = q.prompt;
+  $('questionText').innerHTML = `${q.prompt}<div class="question-report-wrap"><button class="report-btn question-report" onclick="openQuestionReport(${q.id})">Пожаловаться на ошибку</button></div>`;
   $('progressBar').style.width = `${(currentIndex/currentSession.questions.length)*100}%`;
   $('feedback').className = 'feedback hidden';
   $('feedback').innerHTML = '';
@@ -333,7 +339,10 @@ function renderFeedback(q, r){
     <p><b>Правильный ответ:</b> ${r.correct_answer ?? '—'}</p>
     <p><b>Краткое объяснение:</b> ${r.explanation || '—'}</p>
     <p><b>Почему этот вариант правильный:</b> ${r.explanation || 'Ответ соответствует формуле и условиям метода из темы.'}</p>
-    <h4>Краткая теория</h4>
+    <div class="theory-title-row compact">
+      <h4>Краткая теория</h4>
+      <button class="report-btn" onclick="openTheoryReport(${q.topic_id})">Пожаловаться на ошибку</button>
+    </div>
     <div class="theory">${renderTheory(r.theory || 'Теория для темы пока не заполнена.')}</div>
     <h4>Промпт для нейросети</h4>
     <div class="prompt-box" id="promptBox">${escapeHtml(r.ai_prompt || '')}</div>
@@ -421,7 +430,10 @@ function renderFlashcard(){
   $('flashcard').classList.toggle('flipped', flashFlipped);
   $('flashcard').innerHTML = flashFlipped ? `
     <div class="flash-face flash-back">
-      <div class="muted">Ответ / теория</div>
+      <div class="theory-title-row compact">
+        <div class="muted">Ответ / теория</div>
+        <button class="report-btn" onclick="event.stopPropagation(); openTheoryReport(${card.id})">Пожаловаться на ошибку</button>
+      </div>
       <h3>${escapeHtml(card.title)}</h3>
       <div class="theory">${renderTheory(card.back)}</div>
     </div>` : `
@@ -520,6 +532,76 @@ async function importProgress(e){
 }
 
 
+
+function openQuestionReport(questionId){
+  const item = currentSession?.questions?.find(x => x.question.id === questionId) || currentSession?.questions?.[currentIndex];
+  const q = item?.question;
+  if(!q){ toast('Вопрос не найден'); return; }
+  openReportPanel({
+    target_type: 'question',
+    question_id: q.id,
+    topic_id: q.topic_id,
+    title: `Вопрос ${currentIndex + 1}: ${q.topic_title || 'без темы'}`,
+    page_context: {
+      session_id: currentSession?.id || '',
+      question_external_id: q.external_id || '',
+      topic: q.topic_title || '',
+      prompt_preview: String(q.prompt || '').replace(/<[^>]*>/g, '').slice(0, 300)
+    }
+  });
+}
+
+function openTheoryReport(topicId){
+  const topic = topics.find(t => Number(t.id) === Number(topicId));
+  if(!topic){ toast('Тема не найдена'); return; }
+  openReportPanel({
+    target_type: 'theory',
+    topic_id: topic.id,
+    title: `Теория ${topic.external_id}. ${topic.title}`,
+    page_context: {
+      topic_external_id: topic.external_id,
+      topic: topic.title
+    }
+  });
+}
+
+function openReportPanel(context){
+  reportContext = context;
+  $('reportTarget').textContent = context.title || 'Ошибка в материале';
+  $('reportMessage').value = '';
+  $('reportPanel').classList.remove('hidden');
+  setTimeout(() => {
+    $('reportPanel').scrollIntoView({behavior:'smooth', block:'end'});
+    $('reportMessage').focus({preventScroll:true});
+  }, 60);
+}
+
+function closeReportPanel(){
+  reportContext = null;
+  $('reportPanel').classList.add('hidden');
+  $('reportMessage').value = '';
+}
+
+async function submitReport(){
+  if(!reportContext){ toast('Не выбран объект жалобы'); return; }
+  const message = $('reportMessage').value.trim();
+  if(message.length < 5){ toast('Опишите ошибку чуть подробнее'); return; }
+  $('reportSubmit').disabled = true;
+  try{
+    await api('/api/reports', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({...reportContext, message})
+    });
+    toast('Жалоба отправлена администратору');
+    closeReportPanel();
+  }catch(err){
+    toast(err.message || 'Не удалось отправить жалобу');
+  }finally{
+    $('reportSubmit').disabled = false;
+  }
+}
+
 function showModal({title, message, extraHtml = '', confirmText = 'ОК', cancelText = 'Отмена', danger = false}){
   return new Promise(resolve => {
     const backdrop = $('appModal');
@@ -560,9 +642,6 @@ function table(headers, rows){
 function renderTheory(raw){
   let text = String(raw || '').trim();
   if(!text) return '<p>Теория для темы пока не заполнена.</p>';
-  // Старые данные могли содержать Markdown/LaTeX в формате $...$ и $$...$$.
-  // Схлопываем многострочные display-формулы в одну строку, чтобы MathJax
-  // не показывал отдельные строки формулы как обычный текст.
   const compactMath = value => value.trim().replace(/\s+/g, ' ');
   text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, m) => `\\[${compactMath(m)}\\]`);
   text = text.replace(/\\\[([\s\S]*?)\\\]/g, (_, m) => `\\[${compactMath(m)}\\]`);
@@ -578,9 +657,56 @@ function renderTheory(raw){
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>');
 
+  const calloutMap = {
+    'Пример': 'example',
+    'Наглядный пример': 'example',
+    'Верная цифра': 'example',
+    'Значащие цифры': 'example',
+    'Сумма погрешностей': 'example',
+    'Вычитание близких чисел': 'warning',
+    'Произведение': 'example',
+    'Контрпример': 'contrast',
+    'Сравнение': 'contrast',
+    'Контрастные ситуации': 'contrast',
+    'Интуиция': 'intuition',
+    'Как применять': 'steps',
+    'Типичные ошибки': 'mistakes',
+    'Памятка': 'memory',
+    'Практический смысл': 'memory',
+    'Как отвечать на тесте': 'steps'
+  };
+
+  const renderCallout = (label, body, variant = 'note') => {
+    closeList();
+    html += `<div class="theory-callout theory-${variant}"><div class="theory-label">${inline(label)}</div><div class="theory-body">${inline(body)}</div></div>`;
+  };
+
+  const renderMiniTask = (line) => {
+    closeList();
+    const body = line.replace(/^Мини-задача:\s*/i, '').trim();
+    const parts = body.split(/\s+Ответ:\s*/i);
+    const task = parts[0] || body;
+    const answer = parts.slice(1).join(' Ответ: ');
+    html += `<div class="theory-callout theory-task"><div class="theory-label">Мини-задача</div><div class="theory-body">${inline(task)}</div>`;
+    if(answer){
+      html += `<details class="theory-answer"><summary>Показать ответ</summary><div>${inline(answer)}</div></details>`;
+    } else {
+      html += `<details class="theory-answer"><summary>Показать ответ</summary><div>Ответ для этой мини-задачи пока не указан.</div></details>`;
+    }
+    html += `</div>`;
+  };
+
   for(const line of lines){
     if(/^---+$/.test(line)){ closeList(); html += '<hr>'; continue; }
     if(/^\\\[[\s\S]*\\\]$/.test(line)){ closeList(); html += `<div class="math-block">${escapeHtml(line)}</div>`; continue; }
+    if(/^Мини-задача:/i.test(line)){ renderMiniTask(line); continue; }
+
+    const labeled = line.match(/^([А-ЯЁA-Z][А-Яа-яЁёA-Za-z\s\-]+):\s*(.+)$/);
+    if(labeled && calloutMap[labeled[1]]){
+      renderCallout(labeled[1], labeled[2], calloutMap[labeled[1]]);
+      continue;
+    }
+
     const ordered = line.match(/^(\d+)\.\s+(.+)$/);
     if(ordered){ openList('ol'); html += `<li>${inline(ordered[2])}</li>`; continue; }
     const unordered = line.match(/^[-*]\s+(.+)$/);
@@ -592,7 +718,6 @@ function renderTheory(raw){
   closeList();
   return html;
 }
-
 function labelDifficulty(d){ return {very_easy:'самый простой', easy:'простой', medium:'средний', hard:'сложный'}[d] || d; }
 function labelMode(s){
   if(s.mode === 'custom') return 'Конструктор потока';

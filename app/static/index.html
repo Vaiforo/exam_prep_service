@@ -200,6 +200,25 @@
     </section>
   </main>
 
+
+  <section id="reportPanel" class="report-panel hidden" aria-live="polite">
+    <div class="report-card">
+      <div class="report-head">
+        <div>
+          <h3>Пожаловаться на ошибку</h3>
+          <p id="reportTarget" class="muted">Выберите вопрос или теорию.</p>
+        </div>
+        <button id="reportCancel" class="secondary small-btn" type="button">Закрыть</button>
+      </div>
+      <label>Что именно не так?
+        <textarea id="reportMessage" rows="5" maxlength="2000" placeholder="Например: формула отображается криво, правильный ответ спорный, в теории опечатка..."></textarea>
+      </label>
+      <div class="report-actions">
+        <button id="reportSubmit" class="danger" type="button">Отправить жалобу</button>
+      </div>
+    </div>
+  </section>
+
   <div id="toast" class="toast hidden"></div>
 
   <div id="appModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle">

@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .database import Base, SessionLocal, engine, get_db
 from .importer import seed_questions_from_json
-from .models import AuthToken, Choice, Exam, Question, TestAnswer, TestSession, Topic, User
+from .models import AuthToken, Choice, ErrorReport, Exam, Question, TestAnswer, TestSession, Topic, User
 from .services import (
     answer_payload,
     build_stats,
@@ -37,7 +37,7 @@ from .services import (
 
 APP_DIR = Path(__file__).resolve().parent
 QUESTIONS_PATH = APP_DIR / "app_data" / "questions.json"
-APP_VERSION = os.getenv("APP_VERSION", "24")
+APP_VERSION = os.getenv("APP_VERSION", "32")
 
 app = FastAPI(
     title="Numerical Methods Exam Prep",
@@ -51,7 +51,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins or ["*"],
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -112,6 +112,18 @@ class AdminLoginRequest(BaseModel):
 
 class AdminResetPasswordRequest(BaseModel):
     new_password: str = Field(min_length=4, max_length=200)
+
+
+class ErrorReportRequest(BaseModel):
+    target_type: str = Field(pattern="^(question|theory)$")
+    question_id: Optional[int] = None
+    topic_id: Optional[int] = None
+    message: str = Field(min_length=5, max_length=2000)
+    page_context: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdminReportStatusRequest(BaseModel):
+    status: str = Field(pattern="^(new|reviewed|resolved)$")
 
 
 def normalize_username(username: str) -> str:
@@ -206,6 +218,34 @@ def user_summary(db: Session, user: User) -> dict[str, Any]:
     }
 
 
+def report_summary(report: ErrorReport) -> dict[str, Any]:
+    question_payload = None
+    if report.question is not None:
+        question_payload = {
+            "id": report.question.id,
+            "external_id": report.question.external_id,
+            "prompt": report.question.prompt,
+            "topic_title": report.question.topic.title if report.question.topic else None,
+            "topic_external_id": report.question.topic.external_id if report.question.topic else None,
+        }
+    topic_payload = None
+    topic = report.topic or (report.question.topic if report.question is not None else None)
+    if topic is not None:
+        topic_payload = {"id": topic.id, "external_id": topic.external_id, "title": topic.title}
+    return {
+        "id": report.id,
+        "target_type": report.target_type,
+        "message": report.message,
+        "page_context": report.page_context or {},
+        "status": report.status,
+        "created_at": report.created_at.isoformat(),
+        "resolved_at": report.resolved_at.isoformat() if report.resolved_at else None,
+        "sender": {"id": report.user.id, "username": report.user.username} if report.user else None,
+        "question": question_payload,
+        "topic": topic_payload,
+    }
+
+
 @app.on_event("startup")
 def startup() -> None:
     Base.metadata.create_all(bind=engine)
@@ -255,9 +295,12 @@ def admin_logout(authorization: Optional[str] = Header(default=None)) -> dict[st
 
 
 @app.get("/api/admin/users")
-def admin_users(db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> list[dict[str, Any]]:
+def admin_users(status: Optional[str] = None, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> list[dict[str, Any]]:
     users = db.query(User).order_by(User.created_at.desc(), User.id.desc()).all()
-    return [user_summary(db, user) for user in users]
+    summaries = [user_summary(db, user) for user in users]
+    if status in {"online", "offline"}:
+        summaries = [item for item in summaries if item["status"] == status]
+    return summaries
 
 
 @app.get("/api/admin/users/{user_id}/progress")
@@ -298,6 +341,40 @@ def admin_delete_user(user_id: int, db: Session = Depends(get_db), admin: str = 
     db.delete(user)
     db.commit()
     return {"status": "deleted", "user_id": user_id, "username": username}
+
+
+@app.get("/api/admin/reports")
+def admin_reports(status: Optional[str] = None, limit: int = 100, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> list[dict[str, Any]]:
+    query = db.query(ErrorReport).options(
+        selectinload(ErrorReport.user),
+        selectinload(ErrorReport.question).selectinload(Question.topic),
+        selectinload(ErrorReport.topic),
+    )
+    if status in {"new", "reviewed", "resolved"}:
+        query = query.filter(ErrorReport.status == status)
+    rows = query.order_by(ErrorReport.created_at.desc(), ErrorReport.id.desc()).limit(min(max(limit, 1), 300)).all()
+    return [report_summary(row) for row in rows]
+
+
+@app.post("/api/admin/reports/{report_id}/status")
+def admin_report_status(report_id: int, payload: AdminReportStatusRequest, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    report = db.get(ErrorReport, report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    report.status = payload.status
+    report.resolved_at = datetime.utcnow() if payload.status == "resolved" else None
+    db.commit()
+    db.refresh(report)
+    return report_summary(report)
+
+@app.delete("/api/admin/reports/{report_id}")
+def admin_delete_report(report_id: int, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    report = db.get(ErrorReport, report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    db.delete(report)
+    db.commit()
+    return {"status": "deleted", "report_id": report_id}
 
 
 @app.post("/api/auth/register")
@@ -503,6 +580,55 @@ def errors(db: Session = Depends(get_db), user: User = Depends(get_current_user)
     ]
 
 
+
+
+@app.post("/api/reports")
+def create_error_report(payload: ErrorReportRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    message = payload.message.strip()
+    if len(message) < 5:
+        raise HTTPException(status_code=400, detail="Опишите ошибку чуть подробнее")
+    question = None
+    topic = None
+    if payload.target_type == "question":
+        if not payload.question_id:
+            raise HTTPException(status_code=400, detail="Не указан вопрос")
+        question = db.get(Question, payload.question_id)
+        if question is None:
+            raise HTTPException(status_code=404, detail="Question not found")
+        topic = question.topic
+    else:
+        if not payload.topic_id:
+            raise HTTPException(status_code=400, detail="Не указана тема")
+        topic = db.get(Topic, payload.topic_id)
+        if topic is None:
+            raise HTTPException(status_code=404, detail="Topic not found")
+
+    cooldown_seconds = int(os.getenv("REPORT_COOLDOWN_SECONDS", "60"))
+    recent = (
+        db.query(ErrorReport)
+        .filter(ErrorReport.user_id == user.id)
+        .order_by(ErrorReport.created_at.desc(), ErrorReport.id.desc())
+        .first()
+    )
+    if recent and datetime.utcnow() - recent.created_at < timedelta(seconds=cooldown_seconds):
+        remaining = cooldown_seconds - int((datetime.utcnow() - recent.created_at).total_seconds())
+        raise HTTPException(status_code=429, detail=f"Жалобу можно отправлять не чаще одного раза в минуту. Подождите {max(1, remaining)} сек.")
+
+    context = payload.page_context or {}
+    safe_context = {str(k)[:80]: str(v)[:500] for k, v in context.items()}
+    report = ErrorReport(
+        user_id=user.id,
+        target_type=payload.target_type,
+        question_id=question.id if question is not None else None,
+        topic_id=topic.id if topic is not None else None,
+        message=message,
+        page_context=safe_context,
+        status="new",
+    )
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+    return {"status": "created", "report_id": report.id}
 
 
 @app.post("/api/progress/reset")

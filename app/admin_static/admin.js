@@ -65,6 +65,7 @@ async function init(){
       const me = await api('/api/admin/me');
       showAdmin(me.username);
       await loadUsers();
+      await loadReports();
     }catch{
       adminToken = '';
       sessionStorage.removeItem('examAdminToken');
@@ -78,7 +79,9 @@ async function init(){
 function bind(){
   $('loginBtn').onclick = login;
   $('logoutBtn').onclick = logout;
-  $('refreshBtn').onclick = loadUsers;
+  $('refreshBtn').onclick = () => { loadUsers(); loadReports(); };
+  $('userStatusFilter').onchange = loadUsers;
+  $('reportStatusFilter').onchange = loadReports;
   $('adminThemeToggle').onclick = toggleTheme;
   $('adminPassword').addEventListener('keydown', event => {
     if(event.key === 'Enter') login();
@@ -88,7 +91,7 @@ function bind(){
 function startAutoRefresh(){
   if(refreshTimer) clearInterval(refreshTimer);
   refreshTimer = setInterval(() => {
-    if(adminToken) loadUsers().catch(() => {});
+    if(adminToken){ loadUsers().catch(() => {}); loadReports().catch(() => {}); }
   }, 30000);
 }
 
@@ -113,6 +116,7 @@ async function login(){
     sessionStorage.setItem('examAdminToken', adminToken);
     showAdmin(result.admin.username);
     await loadUsers();
+    await loadReports();
   }catch(err){
     $('loginError').textContent = err.message || 'Не удалось войти';
     $('loginError').classList.remove('hidden');
@@ -131,7 +135,9 @@ async function logout(){
 }
 
 async function loadUsers(){
-  const users = await api('/api/admin/users');
+  const status = $('userStatusFilter')?.value || 'all';
+  const query = status && status !== 'all' ? `?status=${encodeURIComponent(status)}` : '';
+  const users = await api(`/api/admin/users${query}`);
   $('usersList').innerHTML = users.map(u => `
     <article class="user-card ${u.id === selectedUserId ? 'active' : ''}" onclick="selectUser(${u.id})">
       <h3>
@@ -150,6 +156,60 @@ async function loadUsers(){
     </article>
   `).join('') || '<p class="muted">Пользователей пока нет.</p>';
 }
+
+async function loadReports(){
+  if(!$('reportsList')) return;
+  const status = $('reportStatusFilter')?.value || 'all';
+  const query = status && status !== 'all' ? `?status=${encodeURIComponent(status)}` : '';
+  const rows = await api(`/api/admin/reports${query}`);
+  $('reportsList').innerHTML = rows.map(renderReport).join('') || '<p class="muted">Жалоб пока нет.</p>';
+}
+
+function renderReport(r){
+  const target = r.target_type === 'question'
+    ? `Вопрос ${escapeHtml(r.question?.external_id || String(r.question?.id || ''))}`
+    : `Теория ${escapeHtml(String(r.topic?.external_id || ''))}`;
+  const topic = r.topic ? `${r.topic.external_id}. ${escapeHtml(r.topic.title)}` : 'Тема не найдена';
+  const sender = r.sender ? `${escapeHtml(r.sender.username)} · id ${r.sender.id}` : 'пользователь удалён';
+  const prompt = r.question?.prompt ? `<div class="report-preview"><b>Вопрос:</b> ${escapeHtml(r.question.prompt)}</div>` : '';
+  const statusText = {new:'Новая', reviewed:'Просмотрена', resolved:'Решена'}[r.status] || r.status;
+  return `
+    <article class="report-card-admin report-${escapeHtml(r.status)}">
+      <div class="report-admin-top">
+        <h3>${target} <span class="report-status">${statusText}</span></h3>
+        <span class="muted">${formatOmskDate(r.created_at)}</span>
+      </div>
+      <div class="muted">Отправитель: ${sender}</div>
+      <div class="muted">Тема: ${topic}</div>
+      ${prompt}
+      <div class="report-message">${escapeHtml(r.message)}</div>
+      <div class="actions compact-actions">
+        <button class="secondary" onclick="setReportStatus(${r.id}, 'reviewed')">Просмотрено</button>
+        <button onclick="setReportStatus(${r.id}, 'resolved')">Решено</button>
+        <button class="secondary" onclick="setReportStatus(${r.id}, 'new')">Вернуть в новые</button>
+        <button class="danger" onclick="deleteReport(${r.id})">Удалить</button>
+      </div>
+    </article>`;
+}
+
+async function setReportStatus(reportId, status){
+  await api(`/api/admin/reports/${reportId}/status`, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({status})
+  });
+  toast('Статус жалобы обновлён');
+  await loadReports();
+}
+
+async function deleteReport(reportId){
+  const ok = await confirmModal('Удалить обращение?', 'Обращение будет удалено из админ-панели. Это удобно для уже обработанных жалоб.');
+  if(!ok) return;
+  await api(`/api/admin/reports/${reportId}`, {method:'DELETE'});
+  toast('Обращение удалено');
+  await loadReports();
+}
+
 
 async function selectUser(userId){
   selectedUserId = userId;
