@@ -193,3 +193,30 @@ class ErrorReport(Base):
     user: Mapped[Optional[User]] = relationship("User")
     question: Mapped[Optional[Question]] = relationship("Question")
     topic: Mapped[Optional[Topic]] = relationship("Topic")
+
+
+class AdminNotification(Base):
+    __tablename__ = "admin_notifications"
+    __table_args__ = (Index("ix_admin_notifications_created", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    title: Mapped[str] = mapped_column(String(255))
+    message: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+
+
+class NotificationDismissal(Base):
+    __tablename__ = "notification_dismissals"
+    __table_args__ = (
+        UniqueConstraint("user_id", "item_type", "item_key", name="uq_notification_dismissal"),
+        Index("ix_notification_dismissals_user", "user_id", "item_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    item_type: Mapped[str] = mapped_column(String(40))
+    item_key: Mapped[str] = mapped_column(String(120))
+    dismissed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    user: Mapped[User] = relationship("User")

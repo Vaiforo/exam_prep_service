@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .database import Base, SessionLocal, engine, get_db
 from .importer import seed_questions_from_json
-from .models import AuthToken, Choice, ErrorReport, Exam, Question, TestAnswer, TestSession, Topic, User
+from .models import AdminNotification, AuthToken, Choice, ErrorReport, Exam, NotificationDismissal, Question, SessionQuestion, TestAnswer, TestSession, Topic, User
 from .services import (
     answer_payload,
     build_stats,
@@ -39,7 +39,8 @@ from .services import (
 
 APP_DIR = Path(__file__).resolve().parent
 QUESTIONS_PATH = APP_DIR / "app_data" / "questions.json"
-APP_VERSION = os.getenv("APP_VERSION", "36")
+PATCH_NOTES_PATH = APP_DIR / "app_data" / "patch_notes.json"
+APP_VERSION = os.getenv("APP_VERSION", "46")
 
 app = FastAPI(
     title="Numerical Methods Exam Prep",
@@ -169,6 +170,95 @@ class PageLoadMetricRequest(BaseModel):
     page: str = Field(default="main", max_length=80)
     route: str = Field(default="/", max_length=200)
 
+
+class NotificationDismissRequest(BaseModel):
+    item_type: str = Field(pattern="^(patch|notification)$")
+    item_key: str = Field(min_length=1, max_length=120)
+
+
+class AdminNotificationRequest(BaseModel):
+    title: str = Field(min_length=3, max_length=255)
+    message: str = Field(min_length=3, max_length=3000)
+
+
+class AdminPatchNotesUpdateRequest(BaseModel):
+    title: str = Field(default="Сайт обновился", min_length=3, max_length=255)
+    changes: list[str] = Field(default_factory=list, max_length=100)
+
+
+
+
+def read_patch_notes() -> dict[str, Any]:
+    if not PATCH_NOTES_PATH.exists():
+        return {"active": [], "archive": []}
+    try:
+        data = json.loads(PATCH_NOTES_PATH.read_text(encoding="utf-8"))
+        return {"active": list(data.get("active", [])), "archive": list(data.get("archive", []))}
+    except Exception:
+        return {"active": [], "archive": []}
+
+
+def write_patch_notes(data: dict[str, Any]) -> None:
+    PATCH_NOTES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PATCH_NOTES_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def seed_current_patch_note() -> None:
+    data = read_patch_notes()
+    if data.get("active") or data.get("archive"):
+        return
+    data["active"] = [{
+        "id": "site-update-current",
+        "title": "Сайт обновился",
+        "created_at": datetime.utcnow().isoformat(),
+        "changes": [
+            "Появилась отдельная страница уведомлений и патч-ноутов.",
+            "При входе на сайт показывается окно «Сайт обновился» со списком изменений.",
+            "Уведомления можно очистить у себя в аккаунте.",
+            "Уведомления теперь появляются у открытого пользователя автоматически, без перезагрузки страницы.",
+            "Если доступно несколько уведомлений или патч-ноутов, они показываются по очереди.",
+        ],
+    }]
+    write_patch_notes(data)
+
+
+def patch_note_public(item: dict[str, Any], archived: bool = False) -> dict[str, Any]:
+    return {
+        "type": "patch",
+        "key": str(item.get("id", "")),
+        "title": item.get("title") or "Сайт обновился",
+        "message": "\n".join(item.get("changes", [])),
+        "changes": item.get("changes", []),
+        "created_at": item.get("created_at"),
+        "archived": archived,
+        "cleared_at": item.get("cleared_at"),
+    }
+
+
+def notification_public(item: AdminNotification) -> dict[str, Any]:
+    return {
+        "type": "notification",
+        "key": str(item.id),
+        "id": item.id,
+        "title": item.title,
+        "message": item.message,
+        "changes": [],
+        "created_at": item.created_at.isoformat(),
+        "archived": not item.is_active,
+    }
+
+
+def dismissed_keys(db: Session, user: User) -> set[tuple[str, str]]:
+    rows = db.query(NotificationDismissal).filter(NotificationDismissal.user_id == user.id).all()
+    return {(row.item_type, row.item_key) for row in rows}
+
+
+def hidden_keys(db: Session, user: User) -> set[tuple[str, str]]:
+    rows = db.query(NotificationDismissal).filter(
+        NotificationDismissal.user_id == user.id,
+        NotificationDismissal.item_type.in_(["hidden_patch", "hidden_notification"]),
+    ).all()
+    return {(row.item_type, row.item_key) for row in rows}
 
 def normalize_username(username: str) -> str:
     return username.strip().lower()
@@ -305,6 +395,7 @@ def report_summary(report: ErrorReport) -> dict[str, Any]:
 @app.on_event("startup")
 def startup() -> None:
     Base.metadata.create_all(bind=engine)
+    seed_current_patch_note()
     migrate_auth_columns()
     migrate_simple_theory_columns()
     db = SessionLocal()
@@ -322,6 +413,78 @@ def index_page() -> HTMLResponse:
 @app.get("/admin")
 def admin_page() -> HTMLResponse:
     return render_versioned_html(APP_DIR / "admin_static" / "index.html")
+
+
+
+
+@app.get("/api/notifications")
+def user_notifications(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    dismissed = dismissed_keys(db, user)
+    hidden = hidden_keys(db, user)
+    notes = read_patch_notes()
+    items: list[dict[str, Any]] = []
+    for item in notes.get("active", []):
+        key = str(item.get("id", ""))
+        if key and ("patch", key) not in dismissed and ("hidden_patch", key) not in hidden:
+            items.append(patch_note_public(item, archived=False))
+    notifications = db.query(AdminNotification).filter(AdminNotification.is_active.is_(True)).order_by(AdminNotification.created_at.desc()).limit(20).all()
+    for notification in notifications:
+        key = str(notification.id)
+        if ("notification", key) not in dismissed and ("hidden_notification", key) not in hidden:
+            items.append(notification_public(notification))
+    return {"items": items}
+
+
+@app.get("/api/notifications/history")
+def notification_history(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    dismissed = dismissed_keys(db, user)
+    hidden = hidden_keys(db, user)
+    notes = read_patch_notes()
+    patch_items = [patch_note_public(item, archived=False) for item in notes.get("active", [])]
+    patch_items += [patch_note_public(item, archived=True) for item in notes.get("archive", [])]
+    patch_items = [item for item in patch_items if ("hidden_patch", str(item["key"])) not in hidden]
+    notifications = db.query(AdminNotification).order_by(AdminNotification.created_at.desc()).limit(100).all()
+    notification_items = [notification_public(item) for item in notifications if ("hidden_notification", str(item.id)) not in hidden]
+    for item in patch_items + notification_items:
+        item["dismissed"] = (item["type"], str(item["key"])) in dismissed
+    return {"items": sorted(patch_items + notification_items, key=lambda x: str(x.get("created_at") or ""), reverse=True)}
+
+
+@app.post("/api/notifications/dismiss")
+def dismiss_notification(payload: NotificationDismissRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    existing = db.scalar(select(NotificationDismissal).where(
+        NotificationDismissal.user_id == user.id,
+        NotificationDismissal.item_type == payload.item_type,
+        NotificationDismissal.item_key == payload.item_key,
+    ))
+    if existing is None:
+        db.add(NotificationDismissal(user_id=user.id, item_type=payload.item_type, item_key=payload.item_key))
+        db.commit()
+    return {"status": "dismissed"}
+
+
+@app.post("/api/notifications/clear-all")
+def clear_all_notifications(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    notes = read_patch_notes()
+    pairs: list[tuple[str, str]] = []
+    for item in notes.get("active", []) + notes.get("archive", []):
+        key = str(item.get("id", ""))
+        if key:
+            pairs.append(("hidden_patch", key))
+    for notification in db.query(AdminNotification).all():
+        pairs.append(("hidden_notification", str(notification.id)))
+    created = 0
+    for item_type, item_key in pairs:
+        exists = db.scalar(select(NotificationDismissal).where(
+            NotificationDismissal.user_id == user.id,
+            NotificationDismissal.item_type == item_type,
+            NotificationDismissal.item_key == item_key,
+        ))
+        if exists is None:
+            db.add(NotificationDismissal(user_id=user.id, item_type=item_type, item_key=item_key))
+            created += 1
+    db.commit()
+    return {"status": "cleared", "hidden": created}
 
 
 @app.post("/api/admin/login")
@@ -351,6 +514,88 @@ def admin_logout(authorization: Optional[str] = Header(default=None)) -> dict[st
     return {"status": "ok"}
 
 
+
+
+
+
+@app.get("/api/admin/notifications")
+def admin_notifications(db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    notes = read_patch_notes()
+    notifications = db.query(AdminNotification).order_by(AdminNotification.created_at.desc()).limit(200).all()
+    return {
+        "patch_notes": notes,
+        "notifications": [notification_public(item) for item in notifications],
+    }
+
+
+@app.post("/api/admin/notifications")
+def admin_create_notification(payload: AdminNotificationRequest, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    item = AdminNotification(title=payload.title.strip(), message=payload.message.strip())
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return notification_public(item)
+
+
+@app.post("/api/admin/notifications/{notification_id}/disable")
+def admin_disable_notification(notification_id: int, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    item = db.get(AdminNotification, notification_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Уведомление не найдено")
+    item.is_active = False
+    db.commit()
+    db.refresh(item)
+    return notification_public(item)
+
+
+@app.post("/api/admin/notifications/{notification_id}/delete")
+def admin_delete_notification(notification_id: int, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    item = db.get(AdminNotification, notification_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Уведомление не найдено")
+    db.delete(item)
+    db.query(NotificationDismissal).filter(
+        NotificationDismissal.item_type.in_(["notification", "hidden_notification"]),
+        NotificationDismissal.item_key == str(notification_id),
+    ).delete(synchronize_session=False)
+    db.commit()
+    return {"status": "deleted", "id": notification_id}
+
+
+@app.post("/api/admin/patch-notes/update")
+def admin_update_patch_notes(payload: AdminPatchNotesUpdateRequest, admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    notes = read_patch_notes()
+    clean_changes = [item.strip() for item in payload.changes if item and item.strip()]
+    if not clean_changes:
+        raise HTTPException(status_code=400, detail="Добавь хотя бы одно изменение")
+    active = notes.get("active", [])
+    current = active[0] if active else {}
+    notes["active"] = [{
+        "id": current.get("id") or "site-update",
+        "title": payload.title.strip() or "Сайт обновился",
+        "created_at": current.get("created_at") or datetime.utcnow().isoformat(),
+        "changes": clean_changes,
+    }]
+    write_patch_notes(notes)
+    return {"status": "updated", "patch_notes": notes}
+
+
+@app.post("/api/admin/patch-notes/clear")
+def admin_clear_patch_notes(admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    notes = read_patch_notes()
+    active = notes.get("active", [])
+    cleared_at = datetime.utcnow().isoformat()
+    batch_id = f"clear-{int(datetime.utcnow().timestamp())}"
+    archived = []
+    for item in active:
+        copied = dict(item)
+        copied["cleared_at"] = cleared_at
+        copied["archive_batch"] = batch_id
+        archived.append(copied)
+    notes["archive"] = archived + list(notes.get("archive", []))
+    notes["active"] = []
+    write_patch_notes(notes)
+    return {"status": "cleared", "moved": len(archived), "batch_id": batch_id}
 
 
 @app.get("/api/admin/metrics")
@@ -402,6 +647,71 @@ def record_page_load(payload: PageLoadMetricRequest, user: User = Depends(get_cu
     return {"status": "ok"}
 
 
+def admin_active_session_summary(db: Session, user: User) -> dict[str, Any] | None:
+    session = (
+        db.query(TestSession)
+        .options(
+            selectinload(TestSession.items).selectinload(SessionQuestion.question).selectinload(Question.topic),
+            selectinload(TestSession.answers),
+        )
+        .filter(TestSession.user_id == user.id, TestSession.status == "active")
+        .order_by(TestSession.started_at.desc(), TestSession.id.desc())
+        .first()
+    )
+    if session is None:
+        return None
+    answered_ids = {answer.question_id for answer in session.answers}
+    topics = []
+    topic_seen = set()
+    difficulties = []
+    difficulty_seen = set()
+    current_question = None
+    for item in session.items:
+        question = item.question
+        if question.topic and question.topic.external_id not in topic_seen:
+            topic_seen.add(question.topic.external_id)
+            topics.append({"id": question.topic.id, "external_id": question.topic.external_id, "title": question.topic.title})
+        if question.difficulty and question.difficulty not in difficulty_seen:
+            difficulty_seen.add(question.difficulty)
+            difficulties.append(question.difficulty)
+        if current_question is None and question.id not in answered_ids:
+            current_question = {
+                "position": item.position + 1,
+                "id": question.id,
+                "external_id": question.external_id,
+                "prompt": question.prompt,
+                "topic_external_id": question.topic.external_id if question.topic else None,
+                "topic_title": question.topic.title if question.topic else None,
+                "difficulty": question.difficulty,
+            }
+    if current_question is None and session.items:
+        item = session.items[-1]
+        question = item.question
+        current_question = {
+            "position": item.position + 1,
+            "id": question.id,
+            "external_id": question.external_id,
+            "prompt": question.prompt,
+            "topic_external_id": question.topic.external_id if question.topic else None,
+            "topic_title": question.topic.title if question.topic else None,
+            "difficulty": question.difficulty,
+        }
+    return {
+        "id": session.id,
+        "mode": session.mode,
+        "status": session.status,
+        "started_at": session.started_at.isoformat(),
+        "answered": len(answered_ids),
+        "total": session.total,
+        "topic_id": session.topic_id,
+        "readiness_level": session.readiness_level,
+        "difficulty": session.difficulty,
+        "topics": sorted(topics, key=lambda item: int(item.get("external_id") or 0)),
+        "difficulties": difficulties,
+        "current_question": current_question,
+    }
+
+
 @app.get("/api/admin/users")
 def admin_users(status: Optional[str] = None, q: Optional[str] = None, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> list[dict[str, Any]]:
     query = db.query(User)
@@ -419,7 +729,9 @@ def admin_user_progress(user_id: int, db: Session = Depends(get_db), admin: str 
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
-    return build_stats(db, user)
+    stats = build_stats(db, user)
+    stats["active_session"] = admin_active_session_summary(db, user)
+    return stats
 
 
 @app.post("/api/admin/users/{user_id}/reset-password")
@@ -678,9 +990,15 @@ def errors(db: Session = Depends(get_db), user: User = Depends(get_current_user)
         .options(selectinload(TestAnswer.question).selectinload(Question.choices), selectinload(TestAnswer.question).selectinload(Question.topic))
         .filter(TestSession.user_id == user.id, TestAnswer.is_correct.is_(False))
         .order_by(TestAnswer.answered_at.desc())
-        .limit(300)
+        .limit(1000)
         .all()
     )
+    latest_by_question: dict[int, TestAnswer] = {}
+    for answer in rows:
+        if answer.question_id not in latest_by_question:
+            latest_by_question[answer.question_id] = answer
+        if len(latest_by_question) >= 300:
+            break
     return [
         {
             "answered_at": a.answered_at.isoformat(),
@@ -688,7 +1006,7 @@ def errors(db: Session = Depends(get_db), user: User = Depends(get_current_user)
             "input_answer": a.input_answer,
             "question": question_public(a.question, include_answer=True),
         }
-        for a in rows
+        for a in latest_by_question.values()
     ]
 
 

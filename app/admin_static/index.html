@@ -36,6 +36,7 @@
         <button class="admin-tab active" data-tab="users">Пользователи</button>
         <button class="admin-tab" data-tab="reports">Жалобы на ошибки</button>
         <button class="admin-tab" data-tab="metrics">Метрики</button>
+        <button class="admin-tab" data-tab="notifications">Уведомления</button>
         <span id="adminInfo" class="muted admin-info"></span>
       </nav>
 
@@ -84,6 +85,29 @@
             </label>
           </div>
           <div id="reportsList" class="reports-list"></div>
+        </section>
+      </section>
+
+      <section id="notificationsTab" class="admin-tab-panel hidden">
+        <section class="panel notifications-admin-panel">
+          <h2>Уведомления</h2>
+          <p class="muted">Разошли уведомление всем пользователям или очисти активный патч-ноут. Архив патч-ноутов сохранится.</p>
+          <div class="notification-form">
+            <h3>Разослать уведомление</h3>
+            <label>Заголовок<input id="adminNotificationTitle" placeholder="Например: Важное обновление"></label>
+            <label>Текст уведомления<textarea id="adminNotificationMessage" rows="4" placeholder="Что нужно сообщить пользователям"></textarea></label>
+            <button id="sendNotificationBtn" type="button">Разослать всем</button>
+          </div>
+          <div class="notification-form patch-editor">
+            <h3>Текущий патч-ноут</h3>
+            <label>Заголовок<input id="patchNoteTitle" placeholder="Сайт обновился"></label>
+            <label>Список изменений<textarea id="patchNoteChanges" rows="8" placeholder="Каждое изменение с новой строки"></textarea></label>
+            <div class="actions compact-actions">
+              <button id="savePatchNotesBtn" type="button">Сохранить патч-ноут</button>
+              <button id="clearPatchNotesBtn" class="danger" type="button">Очистить патч ноут</button>
+            </div>
+          </div>
+          <div id="adminNotificationsList" class="notifications-list"></div>
         </section>
       </section>
 

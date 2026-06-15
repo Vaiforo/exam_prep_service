@@ -69,6 +69,7 @@ async function init(){
       await loadUsers();
       await loadReports();
       await loadMetrics();
+      await loadAdminNotifications();
     }catch{
       adminToken = '';
       sessionStorage.removeItem('examAdminToken');
@@ -84,6 +85,9 @@ function bind(){
   $('logoutBtn').onclick = logout;
   $('refreshBtn').onclick = () => { loadUsers(); };
   $('refreshMetricsBtn').onclick = loadMetrics;
+  $('sendNotificationBtn').onclick = sendAdminNotification;
+  $('clearPatchNotesBtn').onclick = clearPatchNotes;
+  $('savePatchNotesBtn').onclick = savePatchNotes;
   $('userStatusFilter').onchange = loadUsers;
   $('userSearch').oninput = () => { clearTimeout(userSearchTimer); userSearchTimer = setTimeout(loadUsers, 250); };
   document.querySelectorAll('.admin-tab').forEach(btn => btn.onclick = () => switchAdminTab(btn.dataset.tab));
@@ -101,6 +105,7 @@ function startAutoRefresh(){
       if(currentAdminTab === 'users') loadUsers().catch(() => {});
       if(currentAdminTab === 'reports') loadReports().catch(() => {});
       if(currentAdminTab === 'metrics') loadMetrics().catch(() => {});
+  if(currentAdminTab === 'notifications') loadAdminNotifications().catch(() => {});
     }
   }, 30000);
 }
@@ -113,13 +118,14 @@ function stopAutoRefresh(){
 function switchAdminTab(tab){
   currentAdminTab = tab || 'users';
   document.querySelectorAll('.admin-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === currentAdminTab));
-  ['users','reports','metrics'].forEach(name => {
+  ['users','reports','metrics','notifications'].forEach(name => {
     const panel = $(`${name}Tab`);
     if(panel) panel.classList.toggle('hidden', name !== currentAdminTab);
   });
   if(currentAdminTab === 'users') loadUsers().catch(() => {});
   if(currentAdminTab === 'reports') loadReports().catch(() => {});
   if(currentAdminTab === 'metrics') loadMetrics().catch(() => {});
+  if(currentAdminTab === 'notifications') loadAdminNotifications().catch(() => {});
 }
 
 async function login(){
@@ -252,12 +258,50 @@ async function selectUser(userId){
       <div class="metric"><strong>${stats.wrong_answers}</strong><span>ошибок</span></div>
       <div class="metric"><strong>${stats.sessions_total}</strong><span>сессий</span></div>
     </div>
+    ${renderActiveSessionInfo(stats.active_session)}
     <div class="actions">
       <button onclick="resetPassword(${userId})">Сбросить пароль</button>
       <button class="danger" onclick="resetProgress(${userId})">Сбросить прогресс</button>
       <button class="danger" onclick="deleteUser(${userId})">Удалить пользователя</button>
     </div>
   `;
+}
+
+
+function renderActiveSessionInfo(session){
+  if(!session){
+    return `<div class="notification-card"><h4>Активный тест</h4><p class="muted">Сейчас пользователь не проходит тест.</p></div>`;
+  }
+  const topics = (session.topics || []).map(t => `${escapeHtml(String(t.external_id))}. ${escapeHtml(t.title)}`).join('<br>') || '—';
+  const difficulties = (session.difficulties || []).map(labelDifficultyAdmin).join(', ') || '—';
+  const current = session.current_question
+    ? `<div class="report-preview"><b>Текущий вопрос ${session.current_question.position || ''}:</b> ${escapeHtml(session.current_question.prompt || '')}<br><span class="muted">Тема: ${escapeHtml(String(session.current_question.topic_external_id || '—'))}. ${escapeHtml(session.current_question.topic_title || '')}; сложность: ${labelDifficultyAdmin(session.current_question.difficulty)}</span></div>`
+    : '<p class="muted">Текущий вопрос не определён.</p>';
+  const customParams = session.mode === 'custom'
+    ? `<p><b>Параметры потока:</b><br>Темы:<br>${topics}<br>Сложности: ${difficulties}</p>`
+    : '';
+  return `<div class="notification-card active-session-card">
+    <h4>Активный тест</h4>
+    <p><b>Режим:</b> ${labelModeAdmin(session)}</p>
+    <p><b>Прогресс:</b> ${session.answered}/${session.total}; <b>начат:</b> ${formatOmskDate(session.started_at)}</p>
+    ${customParams}
+    ${current}
+  </div>`;
+}
+
+function labelDifficultyAdmin(value){
+  return {very_easy:'самые простые', easy:'простые', medium:'средние', hard:'сложные'}[value] || escapeHtml(String(value || '—'));
+}
+
+function labelModeAdmin(session){
+  if(!session) return '—';
+  if(session.mode === 'custom') return 'Конструктор потока';
+  if(session.mode === 'difficulty') return `Все вопросы: ${labelDifficultyAdmin(session.difficulty)}`;
+  if(session.mode === 'readiness') return `Готовность ${session.readiness_level}%`;
+  if(session.mode === 'topic') return 'Тема';
+  if(session.mode === 'official') return 'Образец';
+  if(session.mode === 'errors') return 'Ошибки';
+  return 'Экзамен';
 }
 
 async function resetPassword(userId){
@@ -290,6 +334,93 @@ async function deleteUser(userId){
   $('userDetails').innerHTML = 'Выберите пользователя слева.';
   $('userDetails').classList.add('muted');
   await loadUsers();
+}
+
+async function loadAdminNotifications(){
+  if(!$('adminNotificationsList')) return;
+  const data = await api('/api/admin/notifications');
+  const active = data.patch_notes?.active || [];
+  const archive = data.patch_notes?.archive || [];
+  const notifications = data.notifications || [];
+  const currentPatch = active[0] || {};
+  if($('patchNoteTitle')) $('patchNoteTitle').value = currentPatch.title || 'Сайт обновился';
+  if($('patchNoteChanges')) $('patchNoteChanges').value = (currentPatch.changes || []).join('\n');
+  $('adminNotificationsList').innerHTML = `
+    <h3>Активный патч-ноут</h3>
+    ${active.map(renderAdminPatchNote).join('') || '<p class="muted">Активный патч-ноут пуст.</p>'}
+    <h3>Рассылки</h3>
+    ${notifications.map(renderAdminNotification).join('') || '<p class="muted">Рассылок пока нет.</p>'}
+    <h3>Архив патч-ноутов</h3>
+    ${archive.map(renderAdminPatchNote).join('') || '<p class="muted">Архив пока пуст.</p>'}`;
+}
+
+function renderAdminPatchNote(item){
+  const changes = (item.changes || []).map(x => `<li>${escapeHtml(x)}</li>`).join('');
+  return `<article class="notification-card"><h4>${escapeHtml(item.title || 'Сайт обновился')} · ${escapeHtml(item.id || '')}</h4><div class="muted">${formatOmskDate(item.created_at)}${item.cleared_at ? ` · очищено ${formatOmskDate(item.cleared_at)}` : ''}</div><ul>${changes}</ul></article>`;
+}
+
+function renderAdminNotification(item){
+  const active = !item.archived;
+  return `<article class="notification-card">
+    <div class="notification-top">
+      <h4>${escapeHtml(item.title)}</h4>
+      <span class="report-status ${active ? 'status-new' : 'status-resolved'}">${active ? 'Активная' : 'Отключена'}</span>
+    </div>
+    <div class="muted">${formatOmskDate(item.created_at)}</div>
+    <p>${escapeHtml(item.message)}</p>
+    <div class="actions compact-actions">
+      ${active ? `<button class="secondary" type="button" onclick="disableAdminNotification(${item.id})">Отключить рассылку</button>` : ''}
+      <button class="danger" type="button" onclick="deleteAdminNotification(${item.id})">Удалить рассылку</button>
+    </div>
+  </article>`;
+}
+
+async function disableAdminNotification(notificationId){
+  const ok = await confirmModal('Отключить рассылку?', 'После отключения это уведомление больше не будет приходить пользователям, которые ещё не закрывали его. В истории оно останется.');
+  if(!ok) return;
+  await api(`/api/admin/notifications/${notificationId}/disable`, {method:'POST'});
+  toast('Рассылка отключена');
+  await loadAdminNotifications();
+}
+
+async function deleteAdminNotification(notificationId){
+  const ok = await confirmModal('Удалить рассылку?', 'Рассылка полностью исчезнет у всех пользователей и из истории уведомлений. Это действие нельзя отменить.');
+  if(!ok) return;
+  await api(`/api/admin/notifications/${notificationId}/delete`, {method:'POST'});
+  toast('Рассылка удалена');
+  await loadAdminNotifications();
+}
+
+async function sendAdminNotification(){
+  const title = $('adminNotificationTitle').value.trim();
+  const message = $('adminNotificationMessage').value.trim();
+  if(title.length < 3 || message.length < 3){ toast('Заполни заголовок и текст уведомления'); return; }
+  await api('/api/admin/notifications', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title, message})});
+  $('adminNotificationTitle').value = '';
+  $('adminNotificationMessage').value = '';
+  toast('Уведомление разослано');
+  await loadAdminNotifications();
+}
+
+async function savePatchNotes(){
+  const title = $('patchNoteTitle').value.trim() || 'Сайт обновился';
+  const changes = $('patchNoteChanges').value.split(/\n+/).map(x => x.trim()).filter(Boolean);
+  if(!changes.length){ toast('Добавь хотя бы одно изменение в патч-ноут'); return; }
+  await api('/api/admin/patch-notes/update', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({title, changes})
+  });
+  toast('Патч-ноут сохранён');
+  await loadAdminNotifications();
+}
+
+async function clearPatchNotes(){
+  const ok = await confirmModal('Очистить активный патч ноут?', 'Активные записи патч-ноута уйдут в архив. В истории уведомлений они сохранятся.');
+  if(!ok) return;
+  await api('/api/admin/patch-notes/clear', {method:'POST'});
+  toast('Патч ноут очищен и перенесён в архив');
+  await loadAdminNotifications();
 }
 
 async function loadMetrics(){

@@ -42,6 +42,9 @@ def get_default_user(db: Session) -> User:
 
 
 def question_public(q: Question, include_answer: bool = False) -> dict[str, Any]:
+    choices = [{"index": c.position, "text": c.text} for c in q.choices]
+    if len(choices) > 1:
+        random.shuffle(choices)
     payload = {
         "id": q.id,
         "external_id": q.external_id,
@@ -50,7 +53,7 @@ def question_public(q: Question, include_answer: bool = False) -> dict[str, Any]
         "topic_title": q.topic.title if q.topic else None,
         "prompt": q.prompt,
         "kind": q.kind,
-        "choices": [{"index": c.position, "text": c.text} for c in q.choices],
+        "choices": choices,
         "source": q.source,
         "difficulty": q.difficulty,
         "simple_theory": q.simple_theory or (q.topic.simple_theory if q.topic else ""),
@@ -235,13 +238,10 @@ def generate_questions(
 
     if mode == "errors":
         wrong_ids = [qid for qid, s in stats.items() if s["wrong"] > 0]
-        if wrong_ids:
-            candidates = query.filter(Question.id.in_(wrong_ids)).all()
-            picked = weighted_pick(candidates, count, stats)
-            if len(picked) >= count:
-                return picked
-            fill = query.filter(~Question.id.in_([q.id for q in picked])).all()
-            return picked + weighted_pick(fill, count - len(picked), stats)
+        if not wrong_ids:
+            return []
+        candidates = query.filter(Question.id.in_(wrong_ids)).all()
+        return weighted_pick(candidates, min(count, len(candidates)), stats)
 
     if mode == "readiness":
         level = readiness_level if readiness_level in READINESS_RATIOS else 50

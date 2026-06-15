@@ -26,12 +26,16 @@ let flashIndex = 0;
 let flashFlipped = false;
 let reportContext = null;
 let theoryMode = localStorage.getItem('examPrepTheoryMode') || 'standard';
+let pendingNoticeItems = [];
+let currentNoticeItem = null;
+let noticePollTimer = null;
 
 const $ = id => document.getElementById(id);
 const show = name => {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   $(name).classList.add('active');
   document.querySelectorAll('.nav').forEach(b => b.classList.toggle('active', b.dataset.view === name));
+  updateReturnToTestButton(name);
   if (window.MathJax) MathJax.typesetPromise();
 };
 const toast = msg => { const t=$('toast'); t.textContent=msg; t.classList.remove('hidden'); setTimeout(()=>t.classList.add('hidden'), 2500); };
@@ -79,19 +83,28 @@ async function init(){
 }
 
 function bindEvents(){
-  document.querySelectorAll('.nav').forEach(b => b.onclick = () => { show(b.dataset.view); if(b.dataset.view==='errors') loadErrors(); if(b.dataset.view==='stats') loadStats(); if(b.dataset.view==='flashcards') initFlashcards(); if(b.dataset.view==='theory') renderTheoryTopic(); });
-  document.querySelectorAll('.mode').forEach(b => b.onclick = () => startTest({mode:b.dataset.mode, count:20}));
+  document.querySelectorAll('.nav').forEach(b => b.onclick = () => { show(b.dataset.view); if(b.dataset.view==='errors') loadErrors(); if(b.dataset.view==='stats') loadStats(); if(b.dataset.view==='flashcards') initFlashcards(); if(b.dataset.view==='theory') renderTheoryTopic(); if(b.dataset.view==='dashboard') refreshCustomFlowInfo(); });
+  document.querySelectorAll('.mode').forEach(b => b.onclick = () => {
+    const mode = b.dataset.mode;
+    startTest({mode, count: mode === 'errors' ? 1000 : 20});
+  });
   document.querySelectorAll('.readiness').forEach(b => b.onclick = () => startTest({mode:'readiness', readiness_level:Number(b.dataset.level), count:20}));
   document.querySelectorAll('.difficulty').forEach(b => b.onclick = () => startTest({mode:'difficulty', difficulty:b.dataset.difficulty, count:1000}));
   $('builderStart').onclick = startCustomFlow;
+  $('builderContinue').onclick = continueCustomFlow;
+  $('builderAllCount').onchange = updateBuilderCountMode;
+  $('returnToTestBtn').onclick = returnToCurrentTest;
   $('builderAllTopics').onclick = () => setBuilderTopics(true);
   $('builderClearTopics').onclick = () => setBuilderTopics(false);
+  document.querySelectorAll('.builder-difficulty').forEach(input => input.onchange = refreshCustomFlowInfo);
   $('backHome').onclick = () => { show('dashboard'); loadSummary(); };
   $('prevBtn').onclick = prevQuestion;
   $('checkBtn').onclick = checkCurrent;
   $('nextBtn').onclick = nextQuestion;
   $('exportBtn').onclick = exportProgress;
   $('importBtn').onclick = () => { $('importFile').value = ''; $('importFile').click(); };
+  $('notificationsBtn').onclick = () => { show('notifications'); loadNotificationHistory(); };
+  $('clearUserNotificationsBtn').onclick = clearUserNotifications;
   $('importFile').onchange = importProgress;
   $('themeToggle').onclick = toggleTheme;
   $('loginBtn').onclick = () => authSubmit('login');
@@ -123,12 +136,19 @@ async function checkAuth(){
 }
 
 function showAuth(){
+  stopNotificationPolling();
+  pendingNoticeItems = [];
+  currentNoticeItem = null;
+  $('siteNotice')?.classList.add('hidden');
+  $('noticeOverlay')?.classList.add('hidden');
+  document.body.classList.remove('notice-open');
   $('authView').classList.remove('hidden');
   $('appLayout').classList.add('hidden');
   $('userBox').classList.add('hidden');
   $('logoutBtn').classList.add('hidden');
   $('exportBtn').classList.add('hidden');
   $('importBtn').classList.add('hidden');
+  $('notificationsBtn').classList.add('hidden');
 }
 
 async function showApp(){
@@ -139,11 +159,17 @@ async function showApp(){
   $('logoutBtn').classList.remove('hidden');
   $('exportBtn').classList.remove('hidden');
   $('importBtn').classList.remove('hidden');
+  $('notificationsBtn').classList.remove('hidden');
   $('userBox').textContent = `Пользователь: ${currentUser.username}`;
   await loadTopics();
   await loadSummary();
+  await loadSiteNotifications(true);
+  startNotificationPolling();
   show('dashboard');
+  updateBuilderCountMode();
+  await refreshCustomFlowInfo();
 }
+
 
 async function authSubmit(mode){
   const username = $('authUsername').value.trim();
@@ -163,6 +189,7 @@ async function authSubmit(mode){
 }
 
 async function logout(){
+  stopNotificationPolling();
   try{ await api('/api/auth/logout', {method:'POST'}); }catch{}
   authToken = '';
   currentUser = null;
@@ -201,20 +228,78 @@ async function loadTopics(){
   $('builderTopics').innerHTML = topics.map(t => `
     <label><input class="builder-topic" type="checkbox" value="${t.id}" checked> ${t.external_id}. ${escapeHtml(t.title)}</label>
   `).join('');
+  document.querySelectorAll('.builder-topic').forEach(input => input.onchange = refreshCustomFlowInfo);
   buildFlashcards();
+  await refreshCustomFlowInfo();
 }
+
 
 function setBuilderTopics(checked){
   document.querySelectorAll('.builder-topic').forEach(input => input.checked = checked);
+  refreshCustomFlowInfo();
 }
+
+function updateBuilderCountMode(){
+  const all = $('builderAllCount')?.checked;
+  if($('builderCount')) $('builderCount').disabled = !!all;
+  refreshCustomFlowInfo();
+}
+
+function selectedBuilderSummary(){
+  const selectedTopics = [...document.querySelectorAll('.builder-topic:checked')].map(x => {
+    const topic = topics.find(t => t.id === Number(x.value));
+    return topic ? topic.external_id : Number(x.value);
+  });
+  const selectedDifficulties = [...document.querySelectorAll('.builder-difficulty:checked')].map(x => labelDifficulty(x.value));
+  return {selectedTopics, selectedDifficulties};
+}
+
+function customSessionSummary(session){
+  const items = session?.questions || [];
+  const topicNums = [...new Set(items.map(item => item.question.topic_external_id).filter(x => x !== null && x !== undefined))].sort((a,b)=>Number(a)-Number(b));
+  const diffs = [...new Set(items.map(item => item.question.difficulty).filter(Boolean))].map(labelDifficulty);
+  return {topicNums, diffs};
+}
+
+async function refreshCustomFlowInfo(){
+  const info = $('builderResumeInfo');
+  const btn = $('builderContinue');
+  if(!info || !btn || !authToken) return;
+  try{
+    const active = await api('/api/sessions/active?mode=custom');
+    if(active.session && active.session.questions?.length){
+      const {topicNums, diffs} = customSessionSummary(active.session);
+      btn.classList.remove('hidden');
+      info.innerHTML = `<b>Активный поток:</b> отвечено ${active.session.answered}/${active.session.total}.<br>Темы: ${topicNums.join(', ') || '—'}. Сложности: ${diffs.join(', ') || '—'}.`;
+    }else{
+      btn.classList.add('hidden');
+      info.innerHTML = '';
+    }
+  }catch{
+    btn.classList.add('hidden');
+  }
+}
+
+async function continueCustomFlow(){
+  const active = await api('/api/sessions/active?mode=custom');
+  if(!active.session){ toast('Нет незавершённого потока'); await refreshCustomFlowInfo(); return; }
+  currentSession = active.session;
+  currentIndex = firstUnansweredIndex(currentSession);
+  show('test');
+  renderQuestion();
+  updateReturnToTestButton('test');
+}
+
 
 async function startCustomFlow(){
   const topic_ids = [...document.querySelectorAll('.builder-topic:checked')].map(x => Number(x.value));
   const difficulties = [...document.querySelectorAll('.builder-difficulty:checked')].map(x => x.value);
-  const count = Math.max(1, Math.min(1000, Number($('builderCount').value || 20)));
+  const allCount = $('builderAllCount')?.checked;
+  const count = allCount ? 1500 : Math.max(1, Math.min(1000, Number($('builderCount').value || 20)));
   if(!topic_ids.length){ toast('Выберите хотя бы одну тему'); return; }
   if(!difficulties.length){ toast('Выберите хотя бы одну сложность'); return; }
-  await startTest({mode:'custom', topic_ids, difficulties, count});
+  await startTest({mode:'custom', topic_ids, difficulties, count, restart:true});
+  await refreshCustomFlowInfo();
 }
 
 function theoryModeToggleHtml(){
@@ -405,12 +490,143 @@ function prevQuestion(){
 
 function nextQuestion(){
   if(currentIndex < currentSession.questions.length - 1){ currentIndex++; renderQuestion(); }
-  else { api(`/api/sessions/${currentSession.id}/finish`, {method:'POST'}).then(s => { currentSession=s; toast(`Тест завершён: ${s.correct_count}/${s.total}`); show('stats'); loadStats(); }); }
+  else { api(`/api/sessions/${currentSession.id}/finish`, {method:'POST'}).then(s => { currentSession=s; toast(`Тест завершён: ${s.correct_count}/${s.total}`); show('stats'); loadStats(); updateReturnToTestButton('stats'); refreshCustomFlowInfo(); }); }
+}
+
+function hasActiveCurrentTest(){
+  return currentSession && currentSession.status === 'active' && currentSession.questions && currentSession.questions.length;
+}
+
+function updateReturnToTestButton(currentView = null){
+  const btn = $('returnToTestBtn');
+  if(!btn) return;
+  const activeView = currentView || [...document.querySelectorAll('.view')].find(v => v.classList.contains('active'))?.id;
+  btn.classList.toggle('hidden', !(hasActiveCurrentTest() && activeView !== 'test'));
+}
+
+function returnToCurrentTest(){
+  if(!hasActiveCurrentTest()){ toast('Активного теста нет'); updateReturnToTestButton(); return; }
+  show('test');
+  renderQuestion();
 }
 
 function copyPrompt(){
   const text = $('promptBox')?.textContent || '';
   navigator.clipboard.writeText(text).then(()=>toast('Промпт скопирован'));
+}
+
+function noticeKey(item){
+  return `${item.type}:${String(item.key)}`;
+}
+
+function startNotificationPolling(){
+  stopNotificationPolling();
+  noticePollTimer = setInterval(() => loadSiteNotifications(false), 5000);
+}
+
+function stopNotificationPolling(){
+  if(noticePollTimer) clearInterval(noticePollTimer);
+  noticePollTimer = null;
+}
+
+function enqueueNoticeItems(items){
+  const known = new Set(pendingNoticeItems.map(noticeKey));
+  if(currentNoticeItem) known.add(noticeKey(currentNoticeItem));
+  for(const item of items || []){
+    const key = noticeKey(item);
+    if(!known.has(key)){
+      pendingNoticeItems.push(item);
+      known.add(key);
+    }
+  }
+}
+
+async function loadSiteNotifications(showImmediately = true){
+  try{
+    const data = await api('/api/notifications');
+    enqueueNoticeItems(data.items || []);
+    if(showImmediately || !currentNoticeItem) renderNextSiteNotice();
+  }catch{}
+}
+
+function renderNextSiteNotice(){
+  const box = $('siteNotice');
+  const overlay = $('noticeOverlay');
+  if(!box || currentNoticeItem || !pendingNoticeItems.length) return;
+  currentNoticeItem = pendingNoticeItems.shift();
+  const item = currentNoticeItem;
+  const changes = item.changes?.length ? `<ul>${item.changes.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>` : `<p>${escapeHtml(item.message || '')}</p>`;
+  box.innerHTML = `
+    <div class="site-notice-card">
+      <div class="site-notice-head">
+        <div>
+          <h3>${escapeHtml(item.title || 'Сайт обновился')}</h3>
+          ${pendingNoticeItems.length ? `<p class="muted">После закрытия появится ещё: ${pendingNoticeItems.length}</p>` : ''}
+        </div>
+      </div>
+      <div class="site-notice-body">${changes}</div>
+      <button class="notice-close-btn" onclick="closeSiteNotice(event)">Закрыть</button>
+    </div>`;
+  overlay?.classList.remove('hidden');
+  box.classList.remove('hidden');
+  document.body.classList.add('notice-open');
+  setTimeout(() => {
+    document.addEventListener('click', closeSiteNoticeOnOutside, {once:true});
+  }, 80);
+}
+
+function closeSiteNoticeOnOutside(event){
+  const card = document.querySelector('.site-notice-card');
+  if(card && card.contains(event.target)){
+    document.addEventListener('click', closeSiteNoticeOnOutside, {once:true});
+    return;
+  }
+  closeSiteNotice();
+}
+
+function closeSiteNotice(event){
+  if(event) event.stopPropagation();
+  const item = currentNoticeItem;
+  currentNoticeItem = null;
+  $('siteNotice')?.classList.add('hidden');
+  $('noticeOverlay')?.classList.add('hidden');
+  document.body.classList.remove('notice-open');
+  if(item){
+    api('/api/notifications/dismiss', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({item_type:item.type, item_key:String(item.key)})}).catch(()=>{});
+  }
+  if(pendingNoticeItems.length){
+    setTimeout(renderNextSiteNotice, 180);
+  }
+}
+
+async function loadNotificationHistory(){
+  const data = await api('/api/notifications/history');
+  const rows = data.items || [];
+  $('notificationsList').innerHTML = rows.map(renderNotificationCard).join('') || '<p class="muted">Уведомлений пока нет.</p>';
+}
+
+async function clearUserNotifications(){
+  const ok = await showModal({
+    title: 'Очистить уведомления?',
+    message: 'Уведомления и патч-ноуты будут скрыты из твоего списка. Новые уведомления после этого всё равно будут приходить.',
+    confirmText: 'Очистить',
+    cancelText: 'Отмена',
+    danger: true
+  });
+  if(!ok) return;
+  await api('/api/notifications/clear-all', {method:'POST'});
+  toast('Уведомления очищены');
+  await loadNotificationHistory();
+}
+
+function renderNotificationCard(item){
+  const changes = item.changes?.length ? `<ul>${item.changes.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>` : `<p>${escapeHtml(item.message || '')}</p>`;
+  const kind = item.type === 'patch' ? 'Патч-ноут' : 'Уведомление';
+  return `<article class="notification-card ${item.dismissed ? 'dismissed' : ''}">
+    <div class="notification-top"><h3>${escapeHtml(item.title || kind)}</h3><span class="badge">${kind}</span></div>
+    <div class="muted">${formatOmskDate(item.created_at)}${item.archived ? ' · архив' : ''}${item.dismissed ? ' · закрыто' : ''}</div>
+    ${changes}
+  </article>`;
 }
 
 async function loadErrors(){
@@ -427,13 +643,27 @@ async function loadErrors(){
   }
   $('errorsList').innerHTML = rows.map(e => `
     <div class="error-item">
-      <div class="muted">${new Date(e.answered_at).toLocaleString()} · ${escapeHtml(e.question.topic_title || '')}</div>
+      <div class="muted">${formatOmskDate(e.answered_at)} · ${escapeHtml(e.question.topic_title || '')}</div>
       <b>${e.question.prompt}</b>
-      <p><b>Правильный ответ:</b> ${escapeHtml(String(e.question.correct_answer ?? ''))}</p>
+      <p><b>Правильный ответ:</b> ${renderCorrectAnswerForError(e.question)}</p>
     </div>`).join('');
   if (window.MathJax) MathJax.typesetPromise();
 }
 
+
+function renderCorrectAnswerForError(question){
+  if(!question) return '—';
+  if(question.kind === 'mcq'){
+    const byIndex = (question.choices || []).find(choice => choice.index === question.correct_choice_index);
+    const text = byIndex?.text ?? question.correct_answer ?? '—';
+    return renderInlineRichText(String(text));
+  }
+  return renderInlineRichText(String(question.correct_answer ?? '—'));
+}
+
+function renderInlineRichText(value){
+  return escapeHtml(value);
+}
 async function loadStats(){
   const s = await api('/api/stats');
   $('statsPanel').innerHTML = `
@@ -778,6 +1008,23 @@ function labelMode(s){
   if(s.mode === 'official') return 'Образец';
   if(s.mode === 'errors') return 'Ошибки';
   return 'Экзамен';
+}
+
+function formatOmskDate(value){
+  if(!value) return '—';
+  const raw = String(value);
+  const normalized = /Z$|[+-]\d{2}:?\d{2}$/.test(raw) ? raw : `${raw}Z`;
+  const date = new Date(normalized);
+  if(Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Asia/Omsk',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  }).format(date) + ' (Омск)';
 }
 function escapeHtml(str){ return String(str).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m])); }
 function escapeAttribute(str){ return escapeHtml(str).replace(/`/g, '&#096;'); }

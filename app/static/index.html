@@ -15,6 +15,8 @@
   <link rel="stylesheet" href="/styles.css?v=__APP_VERSION__" />
 </head>
 <body>
+  <div id="noticeOverlay" class="notice-overlay hidden"></div>
+  <div id="siteNotice" class="site-notice hidden"></div>
   <header class="hero">
     <div>
       <h1 class="brand-title"><img src="/site-icon.png" alt="" class="site-logo"> <span>Численные методы</span></h1>
@@ -26,6 +28,7 @@
       <button id="logoutBtn" class="secondary hidden">Выйти</button>
       <button id="exportBtn" class="secondary hidden">Экспорт прогресса</button>
       <button id="importBtn" class="secondary hidden" type="button">Импорт прогресса</button>
+      <button id="notificationsBtn" class="secondary hidden" type="button">Уведомления</button>
       <input id="importFile" class="hidden" type="file" accept="application/json,.json" />
     </div>
   </header>
@@ -51,6 +54,7 @@
       <button data-view="flashcards" class="nav">Карточки</button>
       <button data-view="errors" class="nav">Ошибки</button>
       <button data-view="stats" class="nav">Аналитика</button>
+      <button id="returnToTestBtn" class="nav return-test-btn hidden" type="button">Вернуться к тесту</button>
     </aside>
 
     <section class="content">
@@ -89,6 +93,8 @@
 
         <div class="card builder-card">
           <h2>Конструктор потока вопросов</h2>
+          <button id="builderContinue" class="secondary hidden builder-continue-top" type="button">Продолжить поток</button>
+          <div id="builderResumeInfo" class="builder-resume-info muted"></div>
           <p class="muted">Выбери несколько тем и пул сложностей. В тест будут попадаться только вопросы, которые подходят под выбранные фильтры.</p>
           <div class="builder-grid">
             <div>
@@ -110,9 +116,12 @@
                 <label><input class="builder-difficulty" type="checkbox" value="hard"> Сложные</label>
               </div>
               <label class="builder-count">Количество вопросов
-                <input id="builderCount" type="number" min="1" max="1000" value="20">
+                <input id="builderCount" type="number" min="1" max="1000" value="20" disabled>
               </label>
-              <button id="builderStart" type="button">Запустить поток</button>
+              <label class="builder-all-count"><input id="builderAllCount" type="checkbox" checked> Все вопросы</label>
+              <div class="builder-actions">
+                <button id="builderStart" type="button">Запустить поток</button>
+              </div>
             </div>
           </div>
         </div>
@@ -194,6 +203,19 @@
             <button id="repeatErrorsTopBtn" class="danger hidden" type="button">Повторить ошибки</button>
           </div>
           <div id="errorsList"></div>
+        </div>
+      </section>
+
+      <section id="notifications" class="view">
+        <div class="card">
+          <div class="section-head">
+            <div>
+              <h2>Уведомления и патч-ноуты</h2>
+              <p class="muted">Здесь хранятся последние уведомления и архив изменений сайта.</p>
+            </div>
+            <button id="clearUserNotificationsBtn" class="danger" type="button">Очистить уведомления</button>
+          </div>
+          <div id="notificationsList" class="notifications-list"></div>
         </div>
       </section>
 
