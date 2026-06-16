@@ -124,7 +124,11 @@ function bindEvents(){
   $('chatOpenDirectBtn').onclick = openDirectChatFromInput;
   $('chatPeerInput').addEventListener('input', handleChatPeerInput);
   $('chatPeerInput').addEventListener('keydown', event => { if(event.key === 'Enter'){ event.preventDefault(); openDirectChatFromInput(); } });
-  document.addEventListener('click', event => { if(!event.target.closest('.chat-peer-row')) hideChatPeerSuggestions(); if(!event.target.closest('.chat-dialog-menu-wrap')) document.querySelectorAll('.chat-dialog-menu').forEach(menu => menu.classList.add('hidden')); });
+  document.addEventListener('click', event => {
+    if(!event.target.closest('.chat-peer-row')) hideChatPeerSuggestions();
+    if(!event.target.closest('.chat-dialog-menu-wrap')) document.querySelectorAll('.chat-dialog-menu').forEach(menu => menu.classList.add('hidden'));
+    if(!event.target.closest('.chat-menu-btn') && !event.target.closest('.chat-message-menu')) closeChatMessageMenus();
+  });
   $('chatRefreshDialogsBtn').onclick = () => loadChatConversations(true);
   $('chatCreateGroupBtn').onclick = showCreateChatRoomModal;
   $('chatSendBtn').onclick = sendChatText;
@@ -1478,12 +1482,24 @@ function renderMessageMenu(message, own){
 }
 
 
+function closeChatMessageMenus(){
+  document.querySelectorAll('.chat-message-menu').forEach(menu => menu.classList.add('hidden'));
+  document.querySelectorAll('.chat-message.menu-open').forEach(item => item.classList.remove('menu-open'));
+}
+
 function toggleChatMessageMenu(messageId){
   document.querySelectorAll('.chat-message-menu').forEach(menu => {
-    if(menu.id !== `chatMenu${messageId}`) menu.classList.add('hidden');
+    if(menu.id !== `chatMenu${messageId}`) {
+      menu.classList.add('hidden');
+      menu.closest('.chat-message')?.classList.remove('menu-open');
+    }
   });
   const menu = $(`chatMenu${messageId}`);
-  if(menu) menu.classList.toggle('hidden');
+  if(!menu) return;
+  const article = menu.closest('.chat-message');
+  const willOpen = menu.classList.contains('hidden');
+  menu.classList.toggle('hidden');
+  if(article) article.classList.toggle('menu-open', willOpen);
 }
 
 function replyToChatMessage(messageId){
@@ -1493,7 +1509,7 @@ function replyToChatMessage(messageId){
   renderChatReplyPreview();
   const input = $('chatInput');
   if(input) input.focus();
-  document.querySelectorAll('.chat-message-menu').forEach(menu => menu.classList.add('hidden'));
+  closeChatMessageMenus();
 }
 
 function renderChatReplyPreview(){
@@ -1542,7 +1558,7 @@ function applyReplyPrefix(text){
 }
 
 async function forwardChatMessage(messageId){
-  document.querySelectorAll('.chat-message-menu').forEach(menu => menu.classList.add('hidden'));
+  closeChatMessageMenus();
   await loadChatConversations(false);
   const selected = await showForwardTargetModal();
   if(!selected) return;
@@ -1588,7 +1604,7 @@ function canModifyChatMessage(message){
 }
 
 async function editChatMessage(messageId){
-  document.querySelectorAll('.chat-message-menu').forEach(menu => menu.classList.add('hidden'));
+  closeChatMessageMenus();
   const message = chatMessageCache.get(Number(messageId));
   const article = document.querySelector(`[data-message-id="${messageId}"]`);
   const currentText = message?.text || article?.dataset.messageText || '';

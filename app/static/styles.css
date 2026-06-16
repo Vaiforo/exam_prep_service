@@ -402,3 +402,12 @@ html[data-theme="dark"] .chat-dialog{background:linear-gradient(135deg,#111827,#
 
 /* keep large chat images inside message bubble */
 .chat-bubble{overflow:hidden;min-width:0}.chat-image-wrap,.chat-image-link{max-width:100%;min-width:0}.chat-image{max-width:100%!important;width:auto!important;height:auto!important;max-height:min(60vh,420px)!important;object-fit:contain!important}.chat-file-info,.chat-file-card{min-width:0}.chat-file-info b{max-width:100%!important}
+
+
+/* chat message action menu must float above image bubbles */
+.chat-message{position:relative;z-index:1}
+.chat-message.menu-open{z-index:80!important}
+.chat-bubble{position:relative;overflow:visible!important;min-width:0}
+.chat-message-menu{z-index:1200!important;overflow:visible!important}
+.chat-image-wrap,.chat-image-link{max-width:100%;min-width:0;overflow:hidden;border-radius:14px}
+.chat-image{max-width:100%!important;width:auto!important;height:auto!important;max-height:min(60vh,420px)!important;object-fit:contain!important}
