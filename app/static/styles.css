@@ -411,3 +411,8 @@ html[data-theme="dark"] .chat-dialog{background:linear-gradient(135deg,#111827,#
 .chat-message-menu{z-index:1200!important;overflow:visible!important}
 .chat-image-wrap,.chat-image-link{max-width:100%;min-width:0;overflow:hidden;border-radius:14px}
 .chat-image{max-width:100%!important;width:auto!important;height:auto!important;max-height:min(60vh,420px)!important;object-fit:contain!important}
+
+
+/* Smaller, non-bold precision hint inside numeric input questions */
+.answer-precision-note{display:block;margin-top:10px;font-size:.666em!important;font-weight:400!important;line-height:1.45;color:var(--muted)}
+.question-card h2 .answer-precision-note,.result-question h4 .answer-precision-note,.error-question-prompt .answer-precision-note{font-weight:400!important}

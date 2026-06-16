@@ -48,7 +48,7 @@ from .services import (
 APP_DIR = Path(__file__).resolve().parent
 QUESTIONS_PATH = APP_DIR / "app_data" / "questions.json"
 PATCH_NOTES_PATH = APP_DIR / "app_data" / "patch_notes.json"
-APP_VERSION = os.getenv("APP_VERSION", "76-chat-menu")
+APP_VERSION = os.getenv("APP_VERSION", "76-report-labels")
 CHAT_MEDIA_DIR = Path(os.getenv("CHAT_MEDIA_DIR", str(APP_DIR.parent / "runtime" / "chat_media")))
 CHAT_MAX_UPLOAD_MB = int(os.getenv("CHAT_MAX_UPLOAD_MB", "25"))
 CHAT_MAX_UPLOAD_BYTES = CHAT_MAX_UPLOAD_MB * 1024 * 1024

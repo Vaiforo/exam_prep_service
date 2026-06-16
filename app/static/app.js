@@ -378,7 +378,7 @@ function renderTheoryTopic(){
   $('theoryPanel').innerHTML = `
     <div class="theory-title-row">
       <h3>${topic.external_id}. ${escapeHtml(topic.title)}</h3>
-      <button class="report-btn" onclick="openTheoryReport(${topic.id})">Пожаловаться на ошибку</button>
+      <button class="report-btn" onclick="openTheoryReport(${topic.id})">Пожаловаться на ошибку в теории</button>
     </div>
     ${theoryModeToggleHtml()}
     <div class="theory">${renderTheory(pickTheory(topic.theory, topic.simple_theory))}</div>
@@ -443,13 +443,18 @@ function firstUnansweredIndex(session){
   return idx === -1 ? Math.max(0, session.questions.length - 1) : idx;
 }
 
+function formatQuestionPrompt(prompt){
+  const text = escapeHtml(String(prompt || ''));
+  return text.replace(/(^|\n)(Точность ответа:[^\n]*)/g, '$1<span class="answer-precision-note">$2</span>');
+}
+
 function renderQuestion(){
   lastFeedback = null;
   const item = currentSession.questions[currentIndex];
   const q = item.question;
   $('testMeta').textContent = `${labelMode(currentSession)} · ${currentSession.answered}/${currentSession.total}`;
   $('questionCounter').textContent = `Вопрос ${currentIndex+1} из ${currentSession.questions.length} · ${q.topic_title || ''} · ${labelDifficulty(q.difficulty)}`;
-  $('questionText').innerHTML = `${q.prompt}<div class="question-report-wrap"><button class="report-btn question-report" onclick="openQuestionReport(${q.id})">Пожаловаться на ошибку</button></div>`;
+  $('questionText').innerHTML = `${formatQuestionPrompt(q.prompt)}<div class="question-report-wrap"><button class="report-btn question-report" onclick="openQuestionReport(${q.id})">Пожаловаться на ошибку в вопросе</button></div>`;
   $('progressBar').style.width = `${(currentIndex/currentSession.questions.length)*100}%`;
   $('feedback').className = 'feedback hidden';
   $('feedback').innerHTML = '';
@@ -504,7 +509,7 @@ function renderFeedback(q, r){
     <p><b>Краткое объяснение:</b> ${r.explanation || '—'}</p>
     <div class="theory-title-row compact">
       <h4>Краткая теория</h4>
-      <button class="report-btn" onclick="openTheoryReport(${q.topic_id})">Пожаловаться на ошибку</button>
+      <button class="report-btn" onclick="openTheoryReport(${q.topic_id})">Пожаловаться на ошибку в теории</button>
     </div>
     ${theoryModeToggleHtml()}
     <div class="theory">${renderTheory(pickTheory(r.theory, r.simple_theory))}</div>
@@ -610,7 +615,7 @@ function renderResultQuestion(q, idx){
       </div>`;
   return `<article class="result-question ${isCorrect ? 'good' : 'bad'}">
     <div class="muted">Вопрос ${idx + 1} · ${escapeHtml(q.topic_title || '')} · ${labelDifficulty(q.difficulty)}${hasAnswer ? '' : ' · пропущено'}</div>
-    <h4>${q.prompt}</h4>
+    <h4>${formatQuestionPrompt(q.prompt)}</h4>
     ${choices}
     <p><b>Пояснение:</b> ${escapeHtml(q.explanation || q.theory || '—')}</p>
   </article>`;
@@ -1782,7 +1787,7 @@ async function loadErrors(){
   $('errorsList').innerHTML = rows.map(e => `
     <div class="error-item">
       <div class="muted">${formatOmskDate(e.answered_at)} · ${escapeHtml(e.question.topic_title || '')}</div>
-      <b>${e.question.prompt}</b>
+      <b class="error-question-prompt">${formatQuestionPrompt(e.question.prompt)}</b>
       <p><b>Правильный ответ:</b> ${renderCorrectAnswerForError(e.question)}</p>
     </div>`).join('');
   if (window.MathJax) MathJax.typesetPromise();
@@ -1850,7 +1855,7 @@ function renderFlashcard(){
     <div class="flash-face flash-back">
       <div class="theory-title-row compact">
         <div class="muted">Ответ / теория</div>
-        <button class="report-btn" onclick="event.stopPropagation(); openTheoryReport(${card.id})">Пожаловаться на ошибку</button>
+        <button class="report-btn" onclick="event.stopPropagation(); openTheoryReport(${card.id})">Пожаловаться на ошибку в теории</button>
       </div>
       <h3>${escapeHtml(card.title)}</h3>
       ${theoryModeToggleHtml()}
@@ -1986,6 +1991,8 @@ function openTheoryReport(topicId){
 
 function openReportPanel(context){
   reportContext = context;
+  const titleNode = $('reportTitle');
+  if(titleNode) titleNode.textContent = context.target_type === 'question' ? 'Пожаловаться на ошибку в вопросе' : 'Пожаловаться на ошибку в теории';
   $('reportTarget').textContent = context.title || 'Ошибка в материале';
   $('reportMessage').value = '';
   $('reportPanel').classList.remove('hidden');
