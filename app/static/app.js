@@ -2079,9 +2079,21 @@ function renderTheory(raw){
 
   const closeList = () => { if(list){ html += `</${list}>`; list = null; } };
   const openList = (tag) => { if(list !== tag){ closeList(); html += `<${tag}>`; list = tag; } };
-  const inline = (value) => escapeHtml(value)
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  const inline = (value) => {
+    const mathParts = [];
+    const protectedValue = String(value).replace(/\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]/g, (match) => {
+      const token = `@@MATH_${mathParts.length}@@`;
+      mathParts.push(escapeHtml(match));
+      return token;
+    });
+    let html = escapeHtml(protectedValue)
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    mathParts.forEach((math, index) => {
+      html = html.replace(`@@MATH_${index}@@`, math);
+    });
+    return html;
+  };
 
   const calloutMap = {
     'Пример': 'example',

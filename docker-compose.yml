@@ -12,7 +12,7 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       ALLOW_QUESTION_IMPORT: ${ALLOW_QUESTION_IMPORT:-false}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
-      APP_VERSION: ${APP_VERSION:-76-report-labels}
+      APP_VERSION: ${APP_VERSION:-76-formula-renderfix}
       CHAT_MAX_UPLOAD_MB: ${CHAT_MAX_UPLOAD_MB:-25}
       ONLINE_TIMEOUT_SECONDS: ${ONLINE_TIMEOUT_SECONDS:-60}
     restart: unless-stopped
