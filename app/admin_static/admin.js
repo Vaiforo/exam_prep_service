@@ -67,6 +67,7 @@ async function init(){
     try{
       const me = await api('/api/admin/me');
       showAdmin(me.username);
+      await loadAdminOverview();
       await loadUsers();
       await loadReports();
       await loadMetrics();
@@ -105,6 +106,7 @@ function startAutoRefresh(){
   if(refreshTimer) clearInterval(refreshTimer);
   refreshTimer = setInterval(() => {
     if(adminToken){
+      loadAdminOverview().catch(() => {});
       if(currentAdminTab === 'users') loadUsers().catch(() => {});
       if(currentAdminTab === 'reports') loadReports().catch(() => {});
       if(currentAdminTab === 'metrics') loadMetrics().catch(() => {});
@@ -133,6 +135,22 @@ function switchAdminTab(tab){
   if(currentAdminTab === 'chat') loadAdminChat(false).catch(() => {});
 }
 
+
+async function loadAdminOverview(){
+  if(!$('adminOverview')) return;
+  try{
+    const m = await api('/api/admin/metrics');
+    $('overviewUsers').textContent = `${m.online_users || 0}/${m.users_total || 0}`;
+    $('overviewUsersHint').textContent = `${m.offline_users || 0} оффлайн`;
+    $('overviewReports').textContent = m.reports_new || 0;
+    $('overviewSessions').textContent = m.active_sessions || 0;
+    $('overviewQuestions').textContent = m.questions_total || 0;
+    $('overviewQuestionsHint').textContent = `${m.topics_total || 0} тем`;
+  }catch(err){
+    // Обзор не должен мешать основной работе админки.
+  }
+}
+
 async function login(){
   const username = $('adminUsername').value.trim();
   const password = $('adminPassword').value;
@@ -148,6 +166,7 @@ async function login(){
     adminToken = result.token;
     sessionStorage.setItem('examAdminToken', adminToken);
     showAdmin(result.admin.username);
+    await loadAdminOverview();
     await loadUsers();
     await loadReports();
     await loadMetrics();
@@ -175,7 +194,9 @@ async function loadUsers(){
   if(status && status !== 'all') params.set('status', status);
   if(search) params.set('q', search);
   const query = params.toString() ? `?${params.toString()}` : '';
+  $('usersList').innerHTML = '<div class="admin-skeleton">Загружаю пользователей…</div>';
   const users = await api(`/api/admin/users${query}`);
+  loadAdminOverview().catch(() => {});
   $('usersList').innerHTML = users.map(u => `
     <article class="user-card ${u.id === selectedUserId ? 'active' : ''}" onclick="selectUser(${u.id})">
       <h3>
@@ -199,7 +220,9 @@ async function loadReports(){
   if(!$('reportsList')) return;
   const status = $('reportStatusFilter')?.value || 'all';
   const query = status && status !== 'all' ? `?status=${encodeURIComponent(status)}` : '';
+  $('reportsList').innerHTML = '<div class="admin-skeleton">Загружаю жалобы…</div>';
   const rows = await api(`/api/admin/reports${query}`);
+  loadAdminOverview().catch(() => {});
   $('reportsList').innerHTML = rows.map(renderReport).join('') || '<p class="muted">Жалоб пока нет.</p>';
 }
 
@@ -558,7 +581,9 @@ async function deleteAdminChatMessage(messageId){
 
 async function loadMetrics(){
   if(!$('metricsList')) return;
+  $('metricsList').innerHTML = '<div class="admin-skeleton">Собираю метрики…</div>';
   const m = await api('/api/admin/metrics');
+  loadAdminOverview().catch(() => {});
   const uptime = formatDuration(m.uptime_seconds || 0);
   $('metricsList').innerHTML = `
     <div class="summary-grid metrics-grid">

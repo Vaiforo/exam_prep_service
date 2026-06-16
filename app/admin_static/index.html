@@ -41,6 +41,29 @@
         <span id="adminInfo" class="muted admin-info"></span>
       </nav>
 
+      <section id="adminOverview" class="admin-overview" aria-label="Краткий обзор админ-панели">
+        <div class="overview-card accent-card">
+          <span class="overview-label">Пользователи</span>
+          <strong id="overviewUsers">—</strong>
+          <small id="overviewUsersHint">онлайн / всего</small>
+        </div>
+        <div class="overview-card warning-card">
+          <span class="overview-label">Новые жалобы</span>
+          <strong id="overviewReports">—</strong>
+          <small>требуют проверки</small>
+        </div>
+        <div class="overview-card success-card">
+          <span class="overview-label">Активные тесты</span>
+          <strong id="overviewSessions">—</strong>
+          <small>сейчас в процессе</small>
+        </div>
+        <div class="overview-card neutral-card">
+          <span class="overview-label">Банк вопросов</span>
+          <strong id="overviewQuestions">—</strong>
+          <small id="overviewQuestionsHint">вопросов / тем</small>
+        </div>
+      </section>
+
       <section id="usersTab" class="admin-tab-panel">
         <section class="panel toolbar">
           <button id="refreshBtn">Обновить пользователей</button>

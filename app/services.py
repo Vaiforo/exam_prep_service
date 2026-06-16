@@ -13,6 +13,25 @@ from .models import Choice, Exam, Question, SessionQuestion, TestAnswer, TestSes
 
 DIFFICULTY_ORDER = ["very_easy", "easy", "medium", "hard"]
 
+EXAM_DIFFICULTY_RATIOS: dict[str, float] = {"very_easy": 0.10, "easy": 0.30, "medium": 0.50, "hard": 0.10}
+
+
+def ratio_counts(total: int, ratios: dict[str, float]) -> dict[str, int]:
+    """Convert difficulty ratios into exact integer counts.
+
+    For the real-exam simulation this gives 2/6/10/2 for 20 questions.
+    For custom counts it preserves the requested total using largest remainders.
+    """
+    total = max(0, int(total))
+    raw = {key: total * float(ratio) for key, ratio in ratios.items()}
+    counts = {key: int(value) for key, value in raw.items()}
+    remainder = total - sum(counts.values())
+    order = sorted(ratios, key=lambda key: (raw[key] - counts[key], ratios[key]), reverse=True)
+    for key in order[:remainder]:
+        counts[key] += 1
+    return counts
+
+
 READINESS_RATIOS: dict[int, dict[str, float]] = {
     30: {"very_easy": 0.70, "easy": 0.30, "medium": 0.00, "hard": 0.00},
     50: {"very_easy": 0.40, "easy": 0.40, "medium": 0.20, "hard": 0.00},
@@ -300,24 +319,27 @@ def generate_questions(
         random.shuffle(picked)
         return picked[:count]
 
-    # Default 20-question exam: topic diversity + weak-question priority.
-    all_questions = query.all()
-    by_topic: dict[int, list[Question]] = {}
-    for q in all_questions:
-        by_topic.setdefault(q.topic_id, []).append(q)
+    # Real-exam simulation: 10/30/50/10 for very_easy/easy/medium/hard.
+    # For the default 20-question exam this gives 2/6/10/2.
     picked: list[Question] = []
     used: set[int] = set()
-    topic_ids = list(by_topic)
-    random.shuffle(topic_ids)
-    for tid in topic_ids:
-        if len(picked) >= count:
-            break
-        choice = weighted_pick([q for q in by_topic[tid] if q.id not in used], 1, stats)
-        if choice:
-            picked.extend(choice)
-            used.add(choice[0].id)
+    target_counts = ratio_counts(count, EXAM_DIFFICULTY_RATIOS)
+    for diff in DIFFICULTY_ORDER:
+        part_count = target_counts.get(diff, 0)
+        if part_count <= 0:
+            continue
+        candidates = query.filter(Question.difficulty == diff).all()
+        part = []
+        for q in weighted_pick(candidates, part_count, stats):
+            if q.id not in used:
+                part.append(q)
+                used.add(q.id)
+        picked.extend(part)
+
     if len(picked) < count:
-        picked.extend(weighted_pick([q for q in all_questions if q.id not in used], count - len(picked), stats))
+        fill = [q for q in query.all() if q.id not in used]
+        picked.extend(weighted_pick(fill, count - len(picked), stats))
+
     random.shuffle(picked)
     return picked[:count]
 
