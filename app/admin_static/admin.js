@@ -99,6 +99,7 @@ function bind(){
   $('savePatchNotesBtn').onclick = savePatchNotes;
   if($('refreshAdminChatBtn')) $('refreshAdminChatBtn').onclick = () => loadAdminChat(true);
   $('userStatusFilter').onchange = loadUsers;
+  if($('userSort')) $('userSort').onchange = loadUsers;
   $('userSearch').oninput = () => { clearTimeout(userSearchTimer); userSearchTimer = setTimeout(loadUsers, 250); };
   document.querySelectorAll('.admin-tab').forEach(btn => btn.onclick = () => switchAdminTab(btn.dataset.tab));
   $('reportStatusFilter').onchange = loadReports;
@@ -196,30 +197,94 @@ async function logout(){
 async function loadUsers(){
   const status = $('userStatusFilter')?.value || 'all';
   const search = $('userSearch')?.value?.trim() || '';
+  const sortMode = $('userSort')?.value || 'activity';
   const params = new URLSearchParams();
   if(status && status !== 'all') params.set('status', status);
   if(search) params.set('q', search);
   const query = params.toString() ? `?${params.toString()}` : '';
   $('usersList').innerHTML = '<div class="admin-skeleton">Загружаю пользователей…</div>';
-  const users = await api(`/api/admin/users${query}`);
+  const users = sortUsers(await api(`/api/admin/users${query}`), sortMode);
   loadAdminOverview().catch(() => {});
-  $('usersList').innerHTML = users.map(u => `
+  renderUserListSummary(users, status, search);
+  $('usersList').innerHTML = users.map(renderUserCard).join('') || '<div class="user-empty-state"><b>Пользователи не найдены</b><span>Измени поиск или фильтр статуса.</span></div>';
+}
+
+function sortUsers(users, sortMode){
+  const rows = [...(users || [])];
+  const lastSeen = user => user.last_seen_at ? new Date(user.last_seen_at).getTime() || 0 : 0;
+  const numeric = key => user => Number(user[key] || 0);
+  const sorters = {
+    activity: (a,b) => Number(b.is_online) - Number(a.is_online) || lastSeen(b) - lastSeen(a) || a.username.localeCompare(b.username),
+    readiness: (a,b) => numeric('readiness')(b) - numeric('readiness')(a) || a.username.localeCompare(b.username),
+    accuracy: (a,b) => numeric('accuracy')(b) - numeric('accuracy')(a) || a.username.localeCompare(b.username),
+    errors: (a,b) => numeric('wrong_answers')(b) - numeric('wrong_answers')(a) || a.username.localeCompare(b.username),
+    sessions: (a,b) => numeric('sessions_total')(b) - numeric('sessions_total')(a) || a.username.localeCompare(b.username),
+    name: (a,b) => a.username.localeCompare(b.username),
+  };
+  return rows.sort(sorters[sortMode] || sorters.activity);
+}
+
+function renderUserListSummary(users, status, search){
+  const el = $('userListSummary');
+  if(!el) return;
+  const total = users.length;
+  const online = users.filter(u => u.is_online).length;
+  const parts = [`${total} ${pluralRu(total, 'пользователь', 'пользователя', 'пользователей')}`, `${online} онлайн`];
+  if(status !== 'all') parts.push(status === 'online' ? 'фильтр: онлайн' : 'фильтр: оффлайн');
+  if(search) parts.push(`поиск: ${escapeHtml(search)}`);
+  el.innerHTML = parts.join(' · ');
+}
+
+function renderUserCard(u){
+  const initial = escapeHtml(String(u.username || '?').slice(0,1).toUpperCase());
+  const readiness = clampPercent(u.readiness);
+  const accuracy = clampPercent(u.accuracy);
+  const coverage = clampPercent(u.coverage);
+  return `
     <article class="user-card ${u.id === selectedUserId ? 'active' : ''}" onclick="selectUser(${u.id})">
-      <h3>
-        ${escapeHtml(u.username)}
-        <span class="badge">id ${u.id}</span>
-        <span class="status-badge ${u.is_online ? 'online' : 'offline'}">${u.is_online ? 'Онлайн' : 'Оффлайн'}</span>
-      </h3>
-      <div class="user-meta">
-        <span>Готовность: <b>${u.readiness}%</b></span>
-        <span>Точность: <b>${u.accuracy}%</b></span>
-        <span>Отвечено: <b>${u.answered_unique}</b></span>
-        <span>Ошибок: <b>${u.wrong_answers}</b></span>
+      <div class="user-card-main">
+        <div class="user-avatar ${u.is_online ? 'online' : 'offline'}">${initial}</div>
+        <div class="user-card-title">
+          <h3>${escapeHtml(u.username)}</h3>
+          <div class="user-card-subline">
+            <span class="badge">id ${u.id}</span>
+            <span class="status-badge ${u.is_online ? 'online' : 'offline'}">${u.is_online ? 'Онлайн' : 'Оффлайн'}</span>
+          </div>
+        </div>
       </div>
-      <div class="muted">Создан: ${formatOmskDate(u.created_at)}</div>
-      <div class="muted">${u.last_seen_at ? `Последняя активность: ${formatOmskDate(u.last_seen_at)}` : 'Активности ещё не было'}</div>
+      <div class="user-progress-lines">
+        ${miniProgress('Готовность', readiness)}
+        ${miniProgress('Точность', accuracy)}
+      </div>
+      <div class="user-meta user-meta-grid">
+        <span><b>${u.answered_unique || 0}</b><small>отвечено</small></span>
+        <span><b>${u.correct_answers || 0}</b><small>верно</small></span>
+        <span><b>${u.wrong_answers || 0}</b><small>ошибок</small></span>
+        <span><b>${u.sessions_total || 0}</b><small>сессий</small></span>
+      </div>
+      <div class="user-card-foot">
+        <span>Покрытие ${coverage}%</span>
+        <span>${u.last_seen_at ? `Активность: ${formatOmskDate(u.last_seen_at)}` : `Создан: ${formatOmskDate(u.created_at)}`}</span>
+      </div>
     </article>
-  `).join('') || '<p class="muted">Пользователей пока нет.</p>';
+  `;
+}
+
+function miniProgress(label, value){
+  const safe = clampPercent(value);
+  return `<div class="mini-progress"><div><span>${label}</span><b>${safe}%</b></div><div class="mini-progress-track"><i style="width:${safe}%"></i></div></div>`;
+}
+
+function clampPercent(value){
+  const n = Number(value || 0);
+  return Math.max(0, Math.min(100, Number.isFinite(n) ? Math.round(n * 10) / 10 : 0));
+}
+
+function pluralRu(n, one, few, many){
+  const abs = Math.abs(Number(n) || 0);
+  if(abs % 10 === 1 && abs % 100 !== 11) return one;
+  if(abs % 10 >= 2 && abs % 10 <= 4 && (abs % 100 < 10 || abs % 100 >= 20)) return few;
+  return many;
 }
 
 async function loadReports(){
@@ -320,19 +385,67 @@ async function deleteReport(reportId){
 async function selectUser(userId){
   selectedUserId = userId;
   await loadUsers();
+  $('userDetails').classList.remove('muted', 'user-details-empty');
+  $('userDetails').innerHTML = '<div class="admin-skeleton">Загружаю детали пользователя…</div>';
   const stats = await api(`/api/admin/users/${userId}/progress`);
-  $('userDetails').classList.remove('muted');
-  $('userDetails').innerHTML = `
-    <h3>${escapeHtml(stats.user)}</h3>
-    <div class="summary-grid">
-      <div class="metric"><strong>${stats.readiness}%</strong><span>готовность</span></div>
-      <div class="metric"><strong>${stats.accuracy}%</strong><span>точность</span></div>
-      <div class="metric"><strong>${stats.answered_unique}/${stats.total_questions}</strong><span>уникальных</span></div>
+  $('userDetails').innerHTML = renderUserDetails(stats, userId);
+}
+
+function renderUserDetails(stats, userId){
+  const readiness = clampPercent(stats.readiness);
+  const accuracy = clampPercent(stats.accuracy);
+  const coverage = clampPercent(stats.coverage);
+  const weakTopics = [...(stats.topics || [])]
+    .filter(t => Number(t.answered || 0) > 0 || Number(t.wrong || 0) > 0)
+    .sort((a,b) => Number(b.wrong || 0) - Number(a.wrong || 0) || Number(a.external_id || 0) - Number(b.external_id || 0))
+    .slice(0, 5);
+  const recentSessions = (stats.recent_sessions || []).slice(0, 5);
+  return `
+    <div class="user-details-hero">
+      <div class="user-details-avatar ${stats.is_online ? 'online' : 'offline'}">${escapeHtml(String(stats.user || stats.username || '?').slice(0,1).toUpperCase())}</div>
+      <div class="user-details-title">
+        <h3>${escapeHtml(stats.user || stats.username || 'Пользователь')}</h3>
+        <div class="user-card-subline">
+          <span class="badge">id ${stats.user_id || userId}</span>
+          <span class="status-badge ${stats.is_online ? 'online' : 'offline'}">${stats.is_online ? 'Онлайн' : 'Оффлайн'}</span>
+          <span class="badge">${stats.has_password ? 'пароль задан' : 'без пароля'}</span>
+        </div>
+        <p class="muted">Создан: ${formatOmskDate(stats.created_at)} · ${stats.last_seen_at ? `последняя активность: ${formatOmskDate(stats.last_seen_at)}` : 'активности ещё не было'}</p>
+      </div>
+    </div>
+
+    <div class="user-details-progress-card">
+      ${largeProgress('Готовность', readiness, 'общая оценка подготовки')}
+      ${largeProgress('Точность', accuracy, 'доля верных ответов')}
+      ${largeProgress('Покрытие', coverage, 'сколько банка закрыто верными ответами')}
+    </div>
+
+    <div class="summary-grid user-details-metrics">
+      <div class="metric"><strong>${stats.answered_unique}/${stats.total_questions}</strong><span>уникальных вопросов</span></div>
+      <div class="metric"><strong>${stats.correct_answers}</strong><span>верных ответов</span></div>
       <div class="metric"><strong>${stats.wrong_answers}</strong><span>ошибок</span></div>
       <div class="metric"><strong>${stats.sessions_total}</strong><span>сессий</span></div>
     </div>
+
     ${renderActiveSessionInfo(stats.active_session)}
-    <div class="actions">
+
+    <div class="user-details-columns">
+      <section class="user-details-card">
+        <h4>Сложности</h4>
+        ${renderDifficultyBreakdown(stats.difficulties || [])}
+      </section>
+      <section class="user-details-card">
+        <h4>Темы с ошибками</h4>
+        ${renderWeakTopics(weakTopics)}
+      </section>
+    </div>
+
+    <section class="user-details-card">
+      <h4>Последние сессии</h4>
+      ${renderRecentSessions(recentSessions)}
+    </section>
+
+    <div class="actions user-details-actions">
       <button onclick="resetPassword(${userId})">Сбросить пароль</button>
       <button class="danger" onclick="resetProgress(${userId})">Сбросить прогресс</button>
       <button class="danger" onclick="deleteUser(${userId})">Удалить пользователя</button>
@@ -340,6 +453,41 @@ async function selectUser(userId){
   `;
 }
 
+function largeProgress(label, value, hint){
+  const safe = clampPercent(value);
+  return `<div class="large-progress"><div><b>${label}</b><strong>${safe}%</strong></div><div class="large-progress-track"><i style="width:${safe}%"></i></div><span>${hint}</span></div>`;
+}
+
+function renderDifficultyBreakdown(rows){
+  if(!rows.length) return '<p class="muted">Данных по сложностям пока нет.</p>';
+  return `<div class="difficulty-breakdown">${rows.map(row => {
+    const answered = Number(row.answered || 0);
+    const questions = Number(row.questions || 0);
+    const percent = questions ? Math.round(answered / questions * 1000) / 10 : 0;
+    return `<div class="difficulty-row"><div><b>${labelDifficultyAdmin(row.difficulty)}</b><span>${answered}/${questions} отвечено · ошибок ${row.wrong || 0}</span></div><div class="mini-progress-track"><i style="width:${clampPercent(percent)}%"></i></div></div>`;
+  }).join('')}</div>`;
+}
+
+function renderWeakTopics(rows){
+  if(!rows.length) return '<p class="muted">Ошибок по темам пока нет.</p>';
+  return `<div class="weak-topics">${rows.map(t => {
+    const answered = Number(t.answered || 0);
+    const wrong = Number(t.wrong || 0);
+    const correct = Number(t.correct || 0);
+    const attempts = correct + wrong;
+    const accuracy = attempts ? Math.round(correct / attempts * 1000) / 10 : 0;
+    return `<div class="weak-topic"><b>${escapeHtml(String(t.external_id))}. ${escapeHtml(t.title)}</b><span>${wrong} ошибок · точность ${accuracy}% · отвечено ${answered}/${t.questions}</span></div>`;
+  }).join('')}</div>`;
+}
+
+function renderRecentSessions(rows){
+  if(!rows.length) return '<p class="muted">Пользователь ещё не завершал и не запускал тесты.</p>';
+  return `<div class="recent-session-list">${rows.map(s => `
+    <div class="recent-session-row">
+      <div><b>${labelModeAdmin(s)}</b><span>${formatOmskDate(s.started_at)} · ${s.status === 'finished' ? 'завершена' : 'активна'}</span></div>
+      <strong>${s.correct_count}/${s.total}</strong>
+    </div>`).join('')}</div>`;
+}
 
 function renderActiveSessionInfo(session){
   if(!session){

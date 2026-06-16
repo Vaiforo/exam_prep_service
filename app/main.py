@@ -48,7 +48,7 @@ from .services import (
 APP_DIR = Path(__file__).resolve().parent
 QUESTIONS_PATH = APP_DIR / "app_data" / "questions.json"
 PATCH_NOTES_PATH = APP_DIR / "app_data" / "patch_notes.json"
-APP_VERSION = os.getenv("APP_VERSION", "76-reportfix")
+APP_VERSION = os.getenv("APP_VERSION", "76-users")
 CHAT_MEDIA_DIR = Path(os.getenv("CHAT_MEDIA_DIR", str(APP_DIR.parent / "runtime" / "chat_media")))
 CHAT_MAX_UPLOAD_MB = int(os.getenv("CHAT_MAX_UPLOAD_MB", "25"))
 CHAT_MAX_UPLOAD_BYTES = CHAT_MAX_UPLOAD_MB * 1024 * 1024
@@ -757,7 +757,10 @@ def user_summary(db: Session, user: User) -> dict[str, Any]:
         "has_password": bool(user.password_hash),
         "readiness": stats["readiness"],
         "accuracy": stats["accuracy"],
+        "coverage": stats["coverage"],
         "answered_unique": stats["answered_unique"],
+        "total_questions": stats["total_questions"],
+        "correct_answers": stats["correct_answers"],
         "wrong_answers": stats["wrong_answers"],
         "sessions_total": stats["sessions_total"],
     }
@@ -2049,6 +2052,13 @@ def admin_user_progress(user_id: int, db: Session = Depends(get_db), admin: str 
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
     stats = build_stats(db, user)
+    online_timeout = int(os.getenv("ONLINE_TIMEOUT_SECONDS", "60"))
+    stats["user_id"] = user.id
+    stats["username"] = user.username
+    stats["created_at"] = user.created_at.isoformat()
+    stats["last_seen_at"] = user.last_seen_at.isoformat() if user.last_seen_at else None
+    stats["is_online"] = bool(user.last_seen_at and datetime.utcnow() - user.last_seen_at <= timedelta(seconds=online_timeout))
+    stats["has_password"] = bool(user.password_hash)
     stats["active_session"] = admin_active_session_summary(db, user)
     return stats
 

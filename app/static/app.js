@@ -457,7 +457,7 @@ function renderQuestion(){
     }).join('')}</div>`;
   } else {
     const previous = q.user_answer?.input_answer || '';
-    $('answerArea').innerHTML = `<input class="answer-input" id="inputAnswer" placeholder="Введите ответ" value="${escapeAttribute(previous)}" />`;
+    $('answerArea').innerHTML = `<input class="answer-input" id="inputAnswer" placeholder="Введите ответ: точка или запятая допустимы" value="${escapeAttribute(previous)}" />`;
   }
   if(q.user_answer && q.correct_answer !== undefined){
     renderFeedback(q, {

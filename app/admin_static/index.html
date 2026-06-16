@@ -81,17 +81,32 @@
               <option value="offline">Оффлайн</option>
             </select>
           </label>
+          <label class="inline-filter">Сортировка
+            <select id="userSort">
+              <option value="activity">По последней активности</option>
+              <option value="readiness">По готовности</option>
+              <option value="accuracy">По точности</option>
+              <option value="errors">По ошибкам</option>
+              <option value="sessions">По сессиям</option>
+              <option value="name">По логину</option>
+            </select>
+          </label>
         </section>
 
-        <section class="grid">
-          <div class="panel">
-            <h2>Пользователи</h2>
+        <section class="grid users-admin-grid">
+          <div class="panel users-panel">
+            <div class="users-panel-head">
+              <div>
+                <h2>Пользователи</h2>
+                <p id="userListSummary" class="muted">Загрузка списка…</p>
+              </div>
+            </div>
             <div id="usersList" class="users-list"></div>
           </div>
 
-          <div class="panel">
+          <div class="panel user-details-panel">
             <h2>Детали пользователя</h2>
-            <div id="userDetails" class="details muted">Выберите пользователя слева.</div>
+            <div id="userDetails" class="details muted user-details-empty">Выберите пользователя слева, чтобы увидеть прогресс, активный тест и последние сессии.</div>
           </div>
         </section>
       </section>
