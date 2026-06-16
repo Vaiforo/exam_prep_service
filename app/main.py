@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .database import Base, SessionLocal, engine, get_db
 from .importer import seed_questions_from_json
-from .models import AdminNotification, AuthToken, ChatDialogHidden, ChatMessage, ChatReadState, ChatRoom, ChatRoomMember, Choice, ErrorReport, Exam, NotificationDismissal, Question, SessionQuestion, TestAnswer, TestSession, Topic, User
+from .models import AdminNotification, AuthToken, ChatDialogHidden, ChatMessage, ChatReadState, ChatRoom, ChatRoomMember, Choice, ErrorReport, Exam, NotificationDismissal, Question, QuestionOverride, SessionQuestion, TestAnswer, TestSession, Topic, User
 from .services import (
     answer_payload,
     build_stats,
@@ -48,7 +48,7 @@ from .services import (
 APP_DIR = Path(__file__).resolve().parent
 QUESTIONS_PATH = APP_DIR / "app_data" / "questions.json"
 PATCH_NOTES_PATH = APP_DIR / "app_data" / "patch_notes.json"
-APP_VERSION = os.getenv("APP_VERSION", "76-users")
+APP_VERSION = os.getenv("APP_VERSION", "76-question-admin")
 CHAT_MEDIA_DIR = Path(os.getenv("CHAT_MEDIA_DIR", str(APP_DIR.parent / "runtime" / "chat_media")))
 CHAT_MAX_UPLOAD_MB = int(os.getenv("CHAT_MAX_UPLOAD_MB", "25"))
 CHAT_MAX_UPLOAD_BYTES = CHAT_MAX_UPLOAD_MB * 1024 * 1024
@@ -174,6 +174,19 @@ class ErrorReportRequest(BaseModel):
 
 class AdminReportStatusRequest(BaseModel):
     status: str = Field(pattern="^(new|reviewed|resolved)$")
+
+
+class AdminQuestionOverrideRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=12000)
+    kind: str = Field(pattern="^(mcq|input)$")
+    difficulty: str = Field(pattern="^(very_easy|easy|medium|hard)$")
+    source: str = Field(default="manual", max_length=40)
+    choices: list[str] = Field(default_factory=list)
+    correct_choice_index: Optional[int] = None
+    answer_text: Optional[str] = Field(default=None, max_length=1000)
+    answer_value: Optional[float] = None
+    tolerance: Optional[float] = None
+    explanation: str = Field(default="", max_length=20000)
 
 
 class PageLoadMetricRequest(BaseModel):
@@ -809,6 +822,135 @@ def report_summary(report: ErrorReport) -> dict[str, Any]:
         "topic": topic_payload,
     }
 
+def normalize_question_external_id(value: str) -> str:
+    return str(value or "").strip().upper()
+
+
+def question_admin_payload(question: Question, override: QuestionOverride | None = None) -> dict[str, Any]:
+    return {
+        "id": question.id,
+        "external_id": question.external_id,
+        "prompt": question.prompt,
+        "kind": question.kind,
+        "difficulty": question.difficulty,
+        "source": question.source,
+        "correct_choice_index": question.correct_choice_index,
+        "answer_text": question.answer_text,
+        "answer_value": question.answer_value,
+        "tolerance": question.tolerance,
+        "explanation": question.explanation,
+        "topic": {"id": question.topic.id, "external_id": question.topic.external_id, "title": question.topic.title} if question.topic else None,
+        "choices": [
+            {"index": choice.position, "text": choice.text, "is_correct": choice.is_correct}
+            for choice in sorted(question.choices, key=lambda item: item.position)
+        ],
+        "has_override": override is not None,
+        "override_updated_at": override.updated_at.isoformat() if override else None,
+    }
+
+
+def normalize_question_override_payload(payload: AdminQuestionOverrideRequest | dict[str, Any]) -> dict[str, Any]:
+    raw = payload.model_dump() if isinstance(payload, AdminQuestionOverrideRequest) else dict(payload or {})
+    kind = str(raw.get("kind") or "mcq").strip()
+    difficulty = str(raw.get("difficulty") or "easy").strip()
+    source = str(raw.get("source") or "manual").strip()[:40] or "manual"
+    prompt = str(raw.get("prompt") or "").strip()
+    explanation = str(raw.get("explanation") or "").strip()
+    choices = [str(item).strip() for item in (raw.get("choices") or []) if str(item).strip()]
+    correct_choice_index = raw.get("correct_choice_index")
+    answer_text = raw.get("answer_text")
+    answer_text = str(answer_text).strip() if answer_text is not None and str(answer_text).strip() else None
+    answer_value = raw.get("answer_value")
+    tolerance = raw.get("tolerance")
+
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Текст вопроса не может быть пустым")
+    if kind == "mcq":
+        if len(choices) < 2:
+            raise HTTPException(status_code=400, detail="Для вопроса с вариантами нужно минимум два варианта ответа")
+        if correct_choice_index is None:
+            raise HTTPException(status_code=400, detail="Укажи номер правильного варианта")
+        correct_choice_index = int(correct_choice_index)
+        if correct_choice_index < 0 or correct_choice_index >= len(choices):
+            raise HTTPException(status_code=400, detail="Правильный вариант выходит за пределы списка")
+        answer_text = None
+        answer_value = None
+        tolerance = None
+    else:
+        choices = []
+        correct_choice_index = None
+        if answer_text is None and answer_value is None:
+            raise HTTPException(status_code=400, detail="Для ручного ввода укажи answer_text или answer_value")
+        if tolerance is not None and float(tolerance) < 0:
+            raise HTTPException(status_code=400, detail="Допуск не может быть отрицательным")
+
+    return {
+        "prompt": prompt,
+        "kind": kind,
+        "difficulty": difficulty,
+        "source": source,
+        "choices": choices,
+        "correct_choice_index": correct_choice_index,
+        "answer_text": answer_text,
+        "answer_value": answer_value,
+        "tolerance": tolerance,
+        "explanation": explanation,
+    }
+
+
+def apply_question_payload(db: Session, question: Question, payload: dict[str, Any]) -> None:
+    clean = normalize_question_override_payload(payload)
+    question.prompt = clean["prompt"]
+    question.kind = clean["kind"]
+    question.difficulty = clean["difficulty"]
+    question.source = clean["source"]
+    question.correct_choice_index = clean["correct_choice_index"]
+    question.answer_text = clean["answer_text"]
+    question.answer_value = clean["answer_value"]
+    question.tolerance = clean["tolerance"]
+    question.explanation = clean["explanation"]
+    question.raw_json = {**(question.raw_json or {}), **clean, "override_applied": True}
+    db.query(Choice).filter(Choice.question_id == question.id).delete(synchronize_session=False)
+    db.flush()
+    for idx, text in enumerate(clean["choices"]):
+        db.add(Choice(question_id=question.id, position=idx, text=text, is_correct=(idx == clean["correct_choice_index"])))
+
+
+def apply_question_overrides(db: Session) -> int:
+    rows = db.query(QuestionOverride).all()
+    applied = 0
+    for item in rows:
+        external_id = normalize_question_external_id(item.external_id)
+        question = db.scalar(select(Question).where(Question.external_id == external_id))
+        if question is None:
+            continue
+        apply_question_payload(db, question, item.payload_json or {})
+        applied += 1
+    db.commit()
+    return applied
+
+
+def find_bundled_question_payload(external_id: str) -> dict[str, Any] | None:
+    target = normalize_question_external_id(external_id)
+    payload = json.loads(QUESTIONS_PATH.read_text(encoding="utf-8"))
+    for item in list(payload.get("questions", [])) + list(payload.get("official_sample", [])):
+        if normalize_question_external_id(item.get("external_id")) == target:
+            choices = list(item.get("choices") or [])
+            return {
+                "prompt": item.get("prompt") or "",
+                "kind": item.get("kind") or "mcq",
+                "difficulty": item.get("difficulty") or "easy",
+                "source": item.get("source") or "manual",
+                "choices": choices,
+                "correct_choice_index": item.get("correct_choice_index"),
+                "answer_text": item.get("answer_text"),
+                "answer_value": item.get("answer_value"),
+                "tolerance": item.get("tolerance"),
+                "explanation": item.get("explanation") or "",
+            }
+    return None
+
+
 
 @app.on_event("startup")
 def startup() -> None:
@@ -821,6 +963,7 @@ def startup() -> None:
     db = SessionLocal()
     try:
         seed_questions_from_json(db, QUESTIONS_PATH, force=False)
+        apply_question_overrides(db)
     finally:
         db.close()
 
@@ -2093,6 +2236,55 @@ def admin_delete_user(user_id: int, db: Session = Depends(get_db), admin: str = 
     db.delete(user)
     db.commit()
     return {"status": "deleted", "user_id": user_id, "username": username}
+
+
+@app.get("/api/admin/questions/{external_id}")
+def admin_get_question(external_id: str, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    qid = normalize_question_external_id(external_id)
+    question = db.query(Question).options(selectinload(Question.choices), selectinload(Question.topic)).filter(Question.external_id == qid).first()
+    if question is None:
+        raise HTTPException(status_code=404, detail="Вопрос с таким ID не найден")
+    override = db.scalar(select(QuestionOverride).where(QuestionOverride.external_id == qid))
+    return {"question": question_admin_payload(question, override), "override": override.payload_json if override else None}
+
+
+@app.put("/api/admin/questions/{external_id}/override")
+def admin_save_question_override(external_id: str, payload: AdminQuestionOverrideRequest, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    qid = normalize_question_external_id(external_id)
+    question = db.query(Question).options(selectinload(Question.choices), selectinload(Question.topic)).filter(Question.external_id == qid).first()
+    if question is None:
+        raise HTTPException(status_code=404, detail="Вопрос с таким ID не найден")
+    clean = normalize_question_override_payload(payload)
+    override = db.scalar(select(QuestionOverride).where(QuestionOverride.external_id == qid))
+    if override is None:
+        override = QuestionOverride(external_id=qid, payload_json=clean)
+        db.add(override)
+    else:
+        override.payload_json = clean
+        override.updated_at = datetime.utcnow()
+    apply_question_payload(db, question, clean)
+    db.commit()
+    db.refresh(question)
+    question = db.query(Question).options(selectinload(Question.choices), selectinload(Question.topic)).get(question.id)
+    return {"status": "saved", "question": question_admin_payload(question, override)}
+
+
+@app.delete("/api/admin/questions/{external_id}/override")
+def admin_delete_question_override(external_id: str, db: Session = Depends(get_db), admin: str = Depends(get_admin_user)) -> dict[str, Any]:
+    qid = normalize_question_external_id(external_id)
+    question = db.query(Question).options(selectinload(Question.choices), selectinload(Question.topic)).filter(Question.external_id == qid).first()
+    if question is None:
+        raise HTTPException(status_code=404, detail="Вопрос с таким ID не найден")
+    override = db.scalar(select(QuestionOverride).where(QuestionOverride.external_id == qid))
+    if override is not None:
+        db.delete(override)
+        db.flush()
+    bundled = find_bundled_question_payload(qid)
+    if bundled is not None:
+        apply_question_payload(db, question, bundled)
+    db.commit()
+    question = db.query(Question).options(selectinload(Question.choices), selectinload(Question.topic)).get(question.id)
+    return {"status": "reset", "question": question_admin_payload(question, None)}
 
 
 @app.get("/api/admin/reports")

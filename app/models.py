@@ -313,3 +313,13 @@ class ChatReadState(Base):
     user: Mapped[User] = relationship("User", foreign_keys=[user_id])
     peer: Mapped[Optional[User]] = relationship("User", foreign_keys=[peer_user_id])
     room: Mapped[Optional[ChatRoom]] = relationship("ChatRoom", foreign_keys=[room_id])
+
+
+class QuestionOverride(Base):
+    __tablename__ = "question_overrides"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    external_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

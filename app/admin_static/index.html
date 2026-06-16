@@ -39,6 +39,7 @@
       <nav class="admin-tabs panel" aria-label="Разделы админ-панели">
         <button class="admin-tab active" data-tab="users">Пользователи</button>
         <button class="admin-tab" data-tab="reports">Жалобы на ошибки</button>
+        <button class="admin-tab" data-tab="questions">Вопросы</button>
         <button class="admin-tab" data-tab="metrics">Метрики</button>
         <button class="admin-tab" data-tab="notifications">Уведомления</button>
         <button class="admin-tab" data-tab="chat">Чат</button>
@@ -66,6 +67,7 @@
           <strong id="overviewQuestions">—</strong>
           <small id="overviewQuestionsHint">вопросов / тем</small>
         </div>
+        <button id="refreshOverviewBtn" class="overview-refresh-btn secondary" type="button">Обновить верхние метрики</button>
       </section>
 
       <section id="usersTab" class="admin-tab-panel">
@@ -107,6 +109,79 @@
           <div class="panel user-details-panel">
             <h2>Детали пользователя</h2>
             <div id="userDetails" class="details muted user-details-empty">Выберите пользователя слева, чтобы увидеть прогресс, активный тест и последние сессии.</div>
+          </div>
+        </section>
+      </section>
+
+      <section id="questionsTab" class="admin-tab-panel hidden">
+        <section class="panel question-editor-panel">
+          <div class="reports-head">
+            <div>
+              <h2>Вопросы</h2>
+              <p class="muted">Введите ID вопроса, например <code>P0080</code>, отредактируйте текст и ответы. Сохранённая правка перекрывает банк вопросов по ID.</p>
+            </div>
+            <div class="question-search-row">
+              <input id="adminQuestionIdInput" class="search-input" placeholder="ID вопроса: P0080">
+              <button id="loadQuestionBtn" type="button">Открыть</button>
+            </div>
+          </div>
+
+          <div id="questionEditorEmpty" class="user-details-empty">Введите ID вопроса и нажмите «Открыть».</div>
+          <div id="questionEditor" class="question-editor-grid hidden">
+            <section class="question-edit-form">
+              <div id="questionMeta" class="question-editor-meta muted"></div>
+              <label>Тип вопроса
+                <select id="qKindEdit">
+                  <option value="mcq">С вариантами ответа</option>
+                  <option value="input">Ручной ввод</option>
+                </select>
+              </label>
+              <label>Сложность
+                <select id="qDifficultyEdit">
+                  <option value="very_easy">Самый простой</option>
+                  <option value="easy">Простой</option>
+                  <option value="medium">Средний</option>
+                  <option value="hard">Сложный</option>
+                </select>
+              </label>
+              <label>Источник
+                <input id="qSourceEdit" placeholder="practice / theory / manual">
+              </label>
+              <label>Текст вопроса
+                <textarea id="qPromptEdit" rows="8"></textarea>
+              </label>
+              <div id="mcqEditBlock" class="question-kind-block">
+                <label>Варианты ответа — каждый с новой строки
+                  <textarea id="qChoicesEdit" rows="7"></textarea>
+                </label>
+                <label>Номер правильного варианта
+                  <input id="qCorrectIndexEdit" type="number" min="1" step="1" placeholder="например: 2">
+                </label>
+              </div>
+              <div id="inputEditBlock" class="question-kind-block hidden">
+                <label>Текст правильного ответа
+                  <input id="qAnswerTextEdit" placeholder="например: 0,001000000">
+                </label>
+                <label>Числовое значение ответа
+                  <input id="qAnswerValueEdit" placeholder="например: 0.001">
+                </label>
+                <label>Допуск
+                  <input id="qToleranceEdit" placeholder="например: 1e-9">
+                </label>
+              </div>
+              <label>Объяснение
+                <textarea id="qExplanationEdit" rows="6"></textarea>
+              </label>
+              <div class="actions question-editor-actions">
+                <button id="previewQuestionBtn" type="button" class="secondary">Предпросмотр</button>
+                <button id="saveQuestionBtn" type="button">Сохранить правку</button>
+                <button id="resetOverrideBtn" type="button" class="danger">Сбросить правку</button>
+              </div>
+            </section>
+            <section class="question-preview-panel">
+              <h3>Предпросмотр</h3>
+              <div id="questionPreview" class="question-preview muted">Откройте вопрос или нажмите «Предпросмотр».</div>
+            </section>
           </div>
         </section>
       </section>

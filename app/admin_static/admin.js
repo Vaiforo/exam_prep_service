@@ -4,6 +4,7 @@ let refreshTimer = null;
 let currentAdminTab = "users";
 let userSearchTimer = null;
 let selectedAdminChatKey = "group";
+let currentQuestionExternalId = null;
 
 const $ = id => document.getElementById(id);
 const toast = msg => {
@@ -93,6 +94,7 @@ function bind(){
   $('loginBtn').onclick = login;
   $('logoutBtn').onclick = logout;
   $('refreshBtn').onclick = () => { loadUsers(); };
+  if($('refreshOverviewBtn')) $('refreshOverviewBtn').onclick = () => loadAdminOverview();
   $('refreshMetricsBtn').onclick = loadMetrics;
   $('sendNotificationBtn').onclick = sendAdminNotification;
   $('clearPatchNotesBtn').onclick = clearPatchNotes;
@@ -103,6 +105,12 @@ function bind(){
   $('userSearch').oninput = () => { clearTimeout(userSearchTimer); userSearchTimer = setTimeout(loadUsers, 250); };
   document.querySelectorAll('.admin-tab').forEach(btn => btn.onclick = () => switchAdminTab(btn.dataset.tab));
   $('reportStatusFilter').onchange = loadReports;
+  if($('loadQuestionBtn')) $('loadQuestionBtn').onclick = loadQuestionForEdit;
+  if($('previewQuestionBtn')) $('previewQuestionBtn').onclick = previewQuestionEdit;
+  if($('saveQuestionBtn')) $('saveQuestionBtn').onclick = saveQuestionOverride;
+  if($('resetOverrideBtn')) $('resetOverrideBtn').onclick = resetQuestionOverride;
+  if($('qKindEdit')) $('qKindEdit').onchange = toggleQuestionKindEditor;
+  if($('adminQuestionIdInput')) $('adminQuestionIdInput').addEventListener('keydown', event => { if(event.key === 'Enter') loadQuestionForEdit(); });
   $('adminThemeToggle').onclick = toggleTheme;
   $('adminPassword').addEventListener('keydown', event => {
     if(event.key === 'Enter') login();
@@ -110,17 +118,7 @@ function bind(){
 }
 
 function startAutoRefresh(){
-  if(refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(() => {
-    if(adminToken){
-      loadAdminOverview().catch(() => {});
-      if(currentAdminTab === 'users') loadUsers().catch(() => {});
-      if(currentAdminTab === 'reports') loadReports().catch(() => {});
-      if(currentAdminTab === 'metrics') loadMetrics().catch(() => {});
-      if(currentAdminTab === 'notifications') loadAdminNotifications().catch(() => {});
-      if(currentAdminTab === 'chat') loadAdminChat(false).catch(() => {});
-    }
-  }, 30000);
+  stopAutoRefresh();
 }
 
 function stopAutoRefresh(){
@@ -128,15 +126,17 @@ function stopAutoRefresh(){
   refreshTimer = null;
 }
 
+
 function switchAdminTab(tab){
   currentAdminTab = tab || 'users';
   document.querySelectorAll('.admin-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === currentAdminTab));
-  ['users','reports','metrics','notifications','chat'].forEach(name => {
+  ['users','reports','questions','metrics','notifications','chat'].forEach(name => {
     const panel = $(`${name}Tab`);
     if(panel) panel.classList.toggle('hidden', name !== currentAdminTab);
   });
   if(currentAdminTab === 'users') loadUsers().catch(() => {});
   if(currentAdminTab === 'reports') loadReports().catch(() => {});
+  if(currentAdminTab === 'questions' && currentQuestionExternalId) loadQuestionForEdit().catch(() => {});
   if(currentAdminTab === 'metrics') loadMetrics().catch(() => {});
   if(currentAdminTab === 'notifications') loadAdminNotifications().catch(() => {});
   if(currentAdminTab === 'chat') loadAdminChat(false).catch(() => {});
@@ -361,6 +361,127 @@ function renderReportAnswer(question){
     return `<div class="report-answer-text">${escapeHtml(String(question.answer_value))}${tolerance}</div>`;
   }
   return '<div class="report-answer-text muted">Варианты или ответ не указаны.</div>';
+}
+
+async function loadQuestionForEdit(){
+  const rawId = $('adminQuestionIdInput')?.value?.trim();
+  if(!rawId){ toast('Введите ID вопроса'); return; }
+  const externalId = rawId.toUpperCase();
+  $('questionEditorEmpty').classList.add('hidden');
+  $('questionEditor').classList.remove('hidden');
+  $('questionPreview').innerHTML = '<div class="admin-skeleton">Загружаю вопрос…</div>';
+  const data = await api(`/api/admin/questions/${encodeURIComponent(externalId)}`);
+  currentQuestionExternalId = data.question.external_id;
+  fillQuestionEditor(data.question);
+  renderQuestionPreview(data.question);
+  toast(data.question.has_override ? 'Открыта сохранённая правка вопроса' : 'Открыт вопрос из банка');
+}
+
+function fillQuestionEditor(q){
+  $('adminQuestionIdInput').value = q.external_id || '';
+  $('questionMeta').innerHTML = `ID: <b>${escapeHtml(q.external_id)}</b> · тема: ${q.topic ? `${escapeHtml(String(q.topic.external_id))}. ${escapeHtml(q.topic.title)}` : '—'} · ${q.has_override ? '<span class="question-override-badge">есть сохранённая правка</span>' : 'правки нет'}`;
+  $('qKindEdit').value = q.kind || 'mcq';
+  $('qDifficultyEdit').value = q.difficulty || 'easy';
+  $('qSourceEdit').value = q.source || 'manual';
+  $('qPromptEdit').value = q.prompt || '';
+  $('qChoicesEdit').value = (q.choices || []).map(choice => choice.text || '').join('\n');
+  const correct = (q.choices || []).find(choice => choice.is_correct);
+  $('qCorrectIndexEdit').value = correct ? String(Number(correct.index || 0) + 1) : (q.correct_choice_index !== null && q.correct_choice_index !== undefined ? String(Number(q.correct_choice_index) + 1) : '');
+  $('qAnswerTextEdit').value = q.answer_text || '';
+  $('qAnswerValueEdit').value = q.answer_value !== null && q.answer_value !== undefined ? String(q.answer_value) : '';
+  $('qToleranceEdit').value = q.tolerance !== null && q.tolerance !== undefined ? String(q.tolerance) : '';
+  $('qExplanationEdit').value = q.explanation || '';
+  toggleQuestionKindEditor();
+}
+
+function toggleQuestionKindEditor(){
+  const isInput = $('qKindEdit')?.value === 'input';
+  $('mcqEditBlock')?.classList.toggle('hidden', isInput);
+  $('inputEditBlock')?.classList.toggle('hidden', !isInput);
+}
+
+function collectQuestionEditorPayload(){
+  const kind = $('qKindEdit').value;
+  const choices = $('qChoicesEdit').value.split(/\n+/).map(x => x.trim()).filter(Boolean);
+  const correctRaw = $('qCorrectIndexEdit').value.trim();
+  const payload = {
+    prompt: $('qPromptEdit').value.trim(),
+    kind,
+    difficulty: $('qDifficultyEdit').value,
+    source: $('qSourceEdit').value.trim() || 'manual',
+    choices: kind === 'mcq' ? choices : [],
+    correct_choice_index: kind === 'mcq' && correctRaw ? Number(correctRaw) - 1 : null,
+    answer_text: kind === 'input' ? ($('qAnswerTextEdit').value.trim() || null) : null,
+    answer_value: kind === 'input' ? parseAdminNumber($('qAnswerValueEdit').value) : null,
+    tolerance: kind === 'input' ? parseAdminNumber($('qToleranceEdit').value) : null,
+    explanation: $('qExplanationEdit').value.trim(),
+  };
+  return payload;
+}
+
+function parseAdminNumber(value){
+  const text = String(value || '').trim().replace(',', '.');
+  if(!text) return null;
+  const num = Number(text);
+  return Number.isFinite(num) ? num : null;
+}
+
+function previewQuestionEdit(){
+  const payload = collectQuestionEditorPayload();
+  const choices = (payload.choices || []).map((text, index) => ({index, text, is_correct:index === payload.correct_choice_index}));
+  renderQuestionPreview({
+    external_id: currentQuestionExternalId || $('adminQuestionIdInput').value.trim().toUpperCase() || '—',
+    kind: payload.kind,
+    difficulty: payload.difficulty,
+    source: payload.source,
+    prompt: payload.prompt,
+    choices,
+    answer_text: payload.answer_text,
+    answer_value: payload.answer_value,
+    tolerance: payload.tolerance,
+    explanation: payload.explanation,
+  });
+}
+
+function renderQuestionPreview(q){
+  const answerBlock = q.kind === 'mcq'
+    ? `<div class="preview-options">${(q.choices || []).map(choice => `<div class="preview-option ${choice.is_correct ? 'correct' : ''}">${escapeHtml(choice.text || '')}${choice.is_correct ? '<span>правильный</span>' : ''}</div>`).join('') || '<p class="muted">Варианты не указаны.</p>'}</div>`
+    : `<div class="preview-input-answer"><b>Ответ:</b> ${escapeHtml(q.answer_text || (q.answer_value !== null && q.answer_value !== undefined ? String(q.answer_value) : '—'))}${q.tolerance !== null && q.tolerance !== undefined ? ` <span class="muted">± ${escapeHtml(String(q.tolerance))}</span>` : ''}</div>`;
+  $('questionPreview').classList.remove('muted');
+  $('questionPreview').innerHTML = `
+    <article class="question-preview-card">
+      <div class="question-preview-meta">ID: <b>${escapeHtml(q.external_id || '—')}</b> · тип: ${escapeHtml(q.kind || '—')} · сложность: ${escapeHtml(labelDifficultyAdmin(q.difficulty))} · источник: ${escapeHtml(q.source || '—')}</div>
+      <div class="question-preview-prompt">${escapeHtml(q.prompt || 'Текст вопроса пустой')}</div>
+      ${answerBlock}
+      ${q.explanation ? `<details class="question-preview-explanation"><summary>Объяснение</summary><div>${escapeHtml(q.explanation)}</div></details>` : ''}
+    </article>`;
+  typesetMath($('questionPreview'));
+}
+
+async function saveQuestionOverride(){
+  const externalId = (currentQuestionExternalId || $('adminQuestionIdInput').value.trim()).toUpperCase();
+  if(!externalId){ toast('Сначала откройте вопрос по ID'); return; }
+  const payload = collectQuestionEditorPayload();
+  const result = await api(`/api/admin/questions/${encodeURIComponent(externalId)}/override`, {
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(payload),
+  });
+  currentQuestionExternalId = result.question.external_id;
+  fillQuestionEditor(result.question);
+  renderQuestionPreview(result.question);
+  toast('Правка вопроса сохранена и будет перекрывать банк вопросов');
+}
+
+async function resetQuestionOverride(){
+  const externalId = (currentQuestionExternalId || $('adminQuestionIdInput').value.trim()).toUpperCase();
+  if(!externalId){ toast('Сначала откройте вопрос по ID'); return; }
+  const ok = await confirmModal('Сбросить правку вопроса?', 'Сохранённое переопределение будет удалено, вопрос вернётся к версии из bundled questions.json.');
+  if(!ok) return;
+  const result = await api(`/api/admin/questions/${encodeURIComponent(externalId)}/override`, {method:'DELETE'});
+  fillQuestionEditor(result.question);
+  renderQuestionPreview(result.question);
+  toast('Правка сброшена');
 }
 
 async function setReportStatus(reportId, status){
