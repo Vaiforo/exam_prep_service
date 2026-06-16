@@ -13,6 +13,12 @@ const toast = msg => {
   setTimeout(() => t.classList.add('hidden'), 2600);
 };
 
+function typesetMath(root = document.body){
+  if(window.MathJax && typeof MathJax.typesetPromise === 'function'){
+    MathJax.typesetPromise(root ? [root] : undefined).catch(() => {});
+  }
+}
+
 function initTheme(){
   const saved = localStorage.getItem('examPrepTheme') || 'light';
   applyTheme(saved);
@@ -224,6 +230,7 @@ async function loadReports(){
   const rows = await api(`/api/admin/reports${query}`);
   loadAdminOverview().catch(() => {});
   $('reportsList').innerHTML = rows.map(renderReport).join('') || '<p class="muted">Жалоб пока нет.</p>';
+  typesetMath($('reportsList'));
 }
 
 function renderReport(r){
@@ -232,7 +239,7 @@ function renderReport(r){
     : `Теория ${escapeHtml(String(r.topic?.external_id || ''))}`;
   const topic = r.topic ? `${r.topic.external_id}. ${escapeHtml(r.topic.title)}` : 'Тема не найдена';
   const sender = r.sender ? `${escapeHtml(r.sender.username)} · id ${r.sender.id}` : 'пользователь удалён';
-  const prompt = r.question?.prompt ? `<div class="report-preview"><b>Вопрос:</b> ${escapeHtml(r.question.prompt)}</div>` : '';
+  const questionBlock = renderReportQuestion(r.question);
   const statusText = {new:'Новая', reviewed:'Просмотрена', resolved:'Решена'}[r.status] || r.status;
   return `
     <article class="report-card-admin report-${escapeHtml(r.status)}">
@@ -242,8 +249,8 @@ function renderReport(r){
       </div>
       <div class="muted">Отправитель: ${sender}</div>
       <div class="muted">Тема: ${topic}</div>
-      ${prompt}
-      <div class="report-message">${escapeHtml(r.message)}</div>
+      ${questionBlock}
+      <div class="report-message"><b>Текст жалобы:</b><br>${escapeHtml(r.message)}</div>
       <div class="actions compact-actions">
         <button class="secondary" onclick="setReportStatus(${r.id}, 'reviewed')">Просмотрено</button>
         <button onclick="setReportStatus(${r.id}, 'resolved')">Решено</button>
@@ -251,6 +258,44 @@ function renderReport(r){
         <button class="danger" onclick="deleteReport(${r.id})">Удалить</button>
       </div>
     </article>`;
+}
+
+function renderReportQuestion(question){
+  if(!question) return '<div class="report-preview report-question-missing">Вопрос не найден в базе. Возможно, банк вопросов был переимпортирован.</div>';
+  const choices = Array.isArray(question.choices) ? question.choices : [];
+  const meta = [
+    question.external_id ? `ID: ${escapeHtml(question.external_id)}` : '',
+    question.kind ? `тип: ${escapeHtml(question.kind)}` : '',
+    question.difficulty ? `сложность: ${escapeHtml(labelDifficultyAdmin(question.difficulty))}` : '',
+    question.source ? `источник: ${escapeHtml(question.source)}` : '',
+  ].filter(Boolean).join(' · ');
+  const choicesHtml = choices.length
+    ? `<ol class="report-choice-list">${choices.map(choice => {
+        const marker = choice.is_correct ? '<span class="report-choice-correct">правильный</span>' : '';
+        return `<li><div class="report-choice-text">${escapeHtml(choice.text || '')}</div>${marker}</li>`;
+      }).join('')}</ol>`
+    : renderReportAnswer(question);
+  return `
+    <section class="report-question-full">
+      <div class="report-question-head">
+        <b>Полный вопрос</b>
+        ${meta ? `<span>${meta}</span>` : ''}
+      </div>
+      <div class="report-question-prompt">${escapeHtml(question.prompt || 'Текст вопроса отсутствует')}</div>
+      <div class="report-question-choices">
+        <b>${choices.length ? 'Варианты ответа' : 'Ответ'}</b>
+        ${choicesHtml}
+      </div>
+    </section>`;
+}
+
+function renderReportAnswer(question){
+  if(question.answer_text) return `<div class="report-answer-text">${escapeHtml(question.answer_text)}</div>`;
+  if(question.answer_value !== null && question.answer_value !== undefined){
+    const tolerance = question.tolerance !== null && question.tolerance !== undefined ? ` ± ${escapeHtml(String(question.tolerance))}` : '';
+    return `<div class="report-answer-text">${escapeHtml(String(question.answer_value))}${tolerance}</div>`;
+  }
+  return '<div class="report-answer-text muted">Варианты или ответ не указаны.</div>';
 }
 
 async function setReportStatus(reportId, status){
